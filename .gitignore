@@ -1,0 +1,7 @@
+start-note.md
+/vault
+/dist/
+*.dat
+*.dat.pub
+*.key
+.DS_Store

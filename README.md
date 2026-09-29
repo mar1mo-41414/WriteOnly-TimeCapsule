@@ -1,0 +1,116 @@
+# WriteOnly-TimeCapsule
+
+[English README →](README-EN.md)
+
+> [!CAUTION]
+> **これは日常をちょっと彩るための「遊び道具」です。実務・業務では使わないでください。**
+>
+> 本当に守らなければならない秘密、仕事のデータ、失うと困るデータの保管には向いていません。
+> 暗号処理そのものは [age](https://age-encryption.org/) や [drand](https://drand.love/) といった実績のあるライブラリに任せていますが、
+> このツール自体は誰の監査も受けていない個人の趣味の産物で、想定している脅威は「うっかり中身を見てしまわない」程度のゆるいものです。
+> データの消失・漏洩などについて、作者は一切の責任を負いません。
+
+**書き込むことはできるけど、開封するまで中身を一切のぞけない**、ソフトウェア版のタイムカプセルです。
+
+日記や写真、未来の自分への手紙などを、思いついたときに `vault add` でポイッと入れていく。
+入れた本人も、何を・何件・どれだけ入れたのかは分からない。
+そして「開封」すると全部が出てきて、カプセルは跡形もなく壊れる。
+
+- 追加は公開鍵だけでできる。中身の一覧・件数・容量を見るコマンドは**存在しない**
+- コンテナは最初から固定サイズ。何を入れても見た目のサイズは変わらない
+- 開封時にカプセルと鍵を破壊できる (もう二度と開けられない)
+- 鍵を「3人のうち2人が集まれば開く」ように分割できる
+- 「20XX年XX月XX日まで、作った本人でも絶対に開けられない」タイムロックを付けられる
+- macOS / Linux 対応の単一バイナリ
+
+## ダウンロード
+
+[Releases](../../releases) から自分の環境に合ったバイナリをダウンロードし、`vault` という名前にして PATH の通った場所へ置きます。
+
+| ファイル | 対象 |
+| --- | --- |
+| `vault-darwin-arm64` | Apple Silicon の Mac |
+| `vault-darwin-amd64` | Intel の Mac |
+| `vault-linux-amd64` | Linux (x86_64) |
+| `vault-linux-arm64` | Linux (ARM64、Raspberry Pi など) |
+
+```bash
+chmod +x vault-darwin-arm64 && mv vault-darwin-arm64 /usr/local/bin/vault
+```
+
+> [!NOTE]
+> macOS でブラウザからダウンロードした場合、Gatekeeper に止められることがあります。
+> そのときは `xattr -d com.apple.quarantine /usr/local/bin/vault` を実行してください。
+
+ソースからビルドする場合は Go が必要です: `make` (ホスト用) / `make dist` (全プラットフォーム)
+
+## 使い方
+
+### 基本: 作る → 入れる → 開ける
+
+```bash
+# カプセルを作る (500MiB)。vault.dat / vault.dat.pub / vault-secret.key ができる
+vault init --size 500M
+#   → 秘密鍵 (vault-secret.key) は USB メモリなどに移して、この PC からは消しておく
+
+# 思いついたときに入れる。表示されるのは「追加しました」だけ
+vault add 日記.txt 写真.jpg
+vault add --delete-original 手紙.txt     # 入れたら元ファイルは消す
+
+# 状態確認 (存在と見た目のサイズしか分からない)
+vault status
+
+# 開封! 全ファイルが出てきて、カプセルと鍵は破壊される (確認あり)
+vault open --key /Volumes/USB/vault-secret.key --and-destroy-key
+```
+
+### 鍵を分割する (「3人のうち2人」)
+
+```bash
+# 鍵を3つの欠片にして、どれか2つが揃えば開くようにする
+vault init --size 500M --shares 3 --threshold 2 --key-out keys/capsule.key
+#   → capsule.share1-of-3.key 〜 share3-of-3.key を、それぞれ別の人・別の場所へ
+
+# 作った後から分割することもできる
+vault split --key vault-secret.key --shares 3 --threshold 2 --delete-original
+
+# 開封は欠片を必要な数だけ持ち寄る
+vault open --key capsule.share1-of-3.key --key capsule.share3-of-3.key --and-destroy-key
+```
+
+欠片1つだけでは、元の鍵の手がかりは一切得られません。欠片の中身は約90文字の1行なので、紙に書き写して渡すこともできます (書き写しミスは自動で検出します)。
+
+### タイムロックを付ける (「〇年後まで開かない」)
+
+```bash
+# 2036年3月20日まで開かないカプセル。非常口として、欠片 (2-of-3) も作っておく
+vault init --size 500M --timelock 2036-03-20 --shares 3 --threshold 2 --key-out escape/capsule.key
+
+vault status         # → 2036-03-20 00:00:00 以降に開封可能 (あと 3460 日)
+vault open           # → まだ開封できません
+
+# その日が来たら、鍵を用意しなくてもそのまま開く (インターネット接続が必要)
+vault open --and-destroy-key
+
+# 作った後からタイムロックを付けることもできる
+vault timelock --key vault-secret.key --until +10y
+```
+
+日時は `2036-03-20` / `"2036-03-20 09:00"` / `+10y` (10年後) / `+6mo` / `+30d` などで指定できます。
+
+PC の時計をずらしても、プログラムを改造しても、その日までは開きません
+(開封に必要な鍵が、その日になるまで世界のどこにも存在しないしくみです)。
+ただし、非常口の鍵 (秘密鍵や欠片) を持っている人はいつでも開けられます。
+
+## 注意
+
+- **鍵をなくしたら二度と開けられません。** 分割した場合は、欠片をなくしすぎると同様です
+- タイムロックは外部サービス [drand](https://drand.love/) に頼っています。その日に drand が無くなっていたら、非常口でしか開けられません。非常口は必ずどこかに残しておいてください
+- 開封で破壊されるのは、開封したその PC 上のファイルだけです。コピーやバックアップまでは消えません
+- 中身を見るコマンド (`list` / `peek` など) は、意図的に作っていません
+
+もっと詳しい仕組みや技術的な注意点は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) にあります。
+
+## ライセンス
+
+[MIT](LICENSE)
