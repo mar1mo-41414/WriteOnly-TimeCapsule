@@ -304,12 +304,26 @@ func ParseUnlockTime(s string, now time.Time) (time.Time, error) {
 		}
 		return time.Time{}, fmt.Errorf("相対指定の形式が不正です: %q (例: +10y, +6mo, +30d, +2h, +90s)", s)
 	}
-	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02T15:04", "2006-01-02 15:04:05", "2006-01-02 15:04", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// 2036/3/20 や 2036.03.20 も受け付ける (日付部分の区切りだけ "-" に揃える)。
+	// 書式の "1" "2" "15" は 1桁・2桁のどちらも読めるので、10-1 でも 10-01 でもよい。
+	norm := s
+	if date, rest, ok := strings.Cut(s, " "); ok {
+		norm = strings.NewReplacer("/", "-", ".", "-").Replace(date) + " " + rest
+	} else if date, rest, ok := strings.Cut(s, "T"); ok {
+		norm = strings.NewReplacer("/", "-", ".", "-").Replace(date) + "T" + rest
+	} else {
+		norm = strings.NewReplacer("/", "-", ".", "-").Replace(s)
+	}
+	for _, layout := range []string{"2006-1-2T15:04:05", "2006-1-2T15:04", "2006-1-2 15:04:05", "2006-1-2 15:04", "2006-1-2"} {
+		if t, err := time.ParseInLocation(layout, norm, time.Local); err == nil {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("日時の形式が不正です: %q (例: 2036-03-20, \"2036-03-20 09:00\", +10y)", s)
+	return time.Time{}, fmt.Errorf("日時の形式が不正です: %q\n"+
+		"  書き方の例: 2036-03-20 / 2036-3-20 / 2036/3/20 (その日の 0:00)、\"2036-03-20 09:00\" (時刻付きは \"\" で囲む)、+10y (10年後)", s)
 }
 
 // ReadTimelockInfo はタイムロック鍵ファイルの開封可能日時を返す (オフライン)。

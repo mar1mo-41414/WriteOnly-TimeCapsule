@@ -37,13 +37,20 @@ func TestParseUnlockTime(t *testing.T) {
 		"+6mo":             time.Date(2027, 3, 29, 10, 0, 0, 0, time.Local),
 		"+30d":             time.Date(2026, 10, 29, 10, 0, 0, 0, time.Local),
 		"+90s":             now.Add(90 * time.Second),
+		"2026-10-1":        time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
+		"2026-10-01":       time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
+		"2026/10/1":        time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
+		"2026.10.01":       time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
+		"2036-3-20 9:30":   time.Date(2036, 3, 20, 9, 30, 0, 0, time.Local),
+		"2036/03/20 09:30": time.Date(2036, 3, 20, 9, 30, 0, 0, time.Local),
+		"2036-3-20T09:30":  time.Date(2036, 3, 20, 9, 30, 0, 0, time.Local),
 	} {
 		got, err := ParseUnlockTime(in, now)
 		if err != nil || !got.Equal(want) {
 			t.Errorf("%q = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"", "tomorrow", "+0d", "+-3y", "2036/03/20"} {
+	for _, bad := range []string{"", "tomorrow", "+0d", "+-3y", "2036-13-01", "2036-02-30", "20361001", "10/1/2026"} {
 		if _, err := ParseUnlockTime(bad, now); err == nil {
 			t.Errorf("%q を受け付けてしまった", bad)
 		}

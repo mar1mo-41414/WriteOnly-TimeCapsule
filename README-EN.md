@@ -77,7 +77,18 @@ vault open --and-destroy-key # after the date, no key needed (Internet access re
 vault timelock --key vault-secret.key --until +10y   # add a time lock to an existing capsule
 ```
 
-Dates: `2036-03-20`, `"2036-03-20 09:00"`, `+10y`, `+6mo`, `+30d`, ...
+#### Date formats
+
+| Format | Meaning |
+| --- | --- |
+| `2036-03-20` / `2036-3-20` / `2036/3/20` | openable from **00:00** on 20 March 2036 |
+| `"2036-03-20 09:00"` | openable from 09:00 on that day. **Quote it** (it contains a space) |
+| `+10y` / `+6mo` / `+30d` | 10 years / 6 months / 30 days from now |
+| `+2h` / `+90s` | 2 hours / 90 seconds from now (for trying it out) |
+
+- Always **year-month-day** with a 4-digit year (`10/1/2026` style is not accepted)
+- Leading zeros are optional (`2026-10-1` = `2026-10-01`)
+- Times are interpreted in the machine's local time zone; past dates are rejected
 
 Changing the clock or patching the program does not help: the key needed to open it simply does not exist anywhere until that date.
 Whoever holds the escape-hatch key (secret key or enough shares) can still open it at any time.
