@@ -65,5 +65,5 @@ That signature is created only at that time by a threshold of the operators, so 
 
 ```bash
 make test                              # unit tests (includes live drand access; VAULT_OFFLINE=1 skips it)
-make build && scripts/e2e.sh ./vault   # end-to-end CLI test (82 checks, ~1 min, needs drand)
+make build && scripts/e2e.sh ./vault   # end-to-end CLI test (89 checks, ~1 min, needs drand)
 ```

@@ -52,12 +52,22 @@ head -c 400000 /dev/urandom > data/big.bin
 v add data/big.bin; v add data/big.bin
 expect_fail "容量切れ" "容量不足" v add data/big.bin
 check      "容量切れの表示は「容量不足」だけ" test "$(grep -c . "$LOG")" -le 2
+# --delete-original は「追加に成功したファイルだけ」消す。容量不足で失敗したファイルは残す
+cp data/big.bin data/keep.bin; HK=$(filehash data/keep.bin)
+expect_fail "容量切れ + --delete-original" "容量不足" v add --delete-original data/keep.bin
+check      "容量切れで失敗した元ファイルは残る (中身も無傷)" test -e data/keep.bin -a "$(filehash data/keep.bin)" = "$HK"
+echo "一緒に渡した小さいファイル" > data/mixed.txt; cp data/mixed.txt mixed.bak
+expect_fail "小+大を一度に --delete-original (大だけ失敗)" "1 件の追加に失敗" v add --delete-original data/mixed.txt data/keep.bin
+check      "成功した小さいファイルだけ消える" gone data/mixed.txt
+check      "失敗した大きいファイルは残る (中身も無傷)" test -e data/keep.bin -a "$(filehash data/keep.bin)" = "$HK"
 echo "容量切れの後" > data/after.txt
 expect_ok  "容量切れ後も小さいファイルは追加できる" v add data/after.txt
 expect_ok  "開封 + 破棄確認で n" no_v open --key usb/secret.key --out opened1 --and-destroy-key
 check      "n ならコンテナ・鍵は残る" test -e vault.dat -a -e usb/secret.key
 expect_ok  "開封 + 破棄 (y)" yes_v open --key usb/secret.key --out opened --and-destroy-key
-check      "7件展開" grep -q "^7 件を" "$LOG"
+check      "8件展開 (容量切れで失敗したものは入っていない)" grep -q "^8 件を" "$LOG"
+check      "一緒に渡して成功した mixed.txt も一致" cmp -s mixed.bak opened/mixed.txt
+check      "失敗した keep.bin は入っていない" gone opened/keep.bin
 check      "展開物が元と一致 (同名は big (1).bin)" same_all diary.txt score.csv photo.jpg memo.txt big.bin after.txt
 check      "big (1).bin も一致" cmp -s data/big.bin "opened/big (1).bin"
 check      "コンテナ・秘密鍵・公開鍵が消滅" gone vault.dat usb/secret.key vault.dat.pub

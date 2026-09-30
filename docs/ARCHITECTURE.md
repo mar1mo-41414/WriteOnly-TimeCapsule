@@ -65,5 +65,5 @@
 
 ```bash
 make test                      # 単体テスト (drand への実接続を含む。VAULT_OFFLINE=1 でスキップ)
-make build && scripts/e2e.sh ./vault   # CLI の通しテスト (82項目、約1分。drand への接続が必要)
+make build && scripts/e2e.sh ./vault   # CLI の通しテスト (89項目、約1分。drand への接続が必要)
 ```
