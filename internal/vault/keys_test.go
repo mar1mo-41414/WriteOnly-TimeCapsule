@@ -148,3 +148,46 @@ func TestInitSplitAndOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestKeyOutDirectory(t *testing.T) {
+	d := t.TempDir()
+	existing := filepath.Join(d, "usb")
+	os.Mkdir(existing, 0o700)
+	for in, want := range map[string]string{
+		"secret-key/":   "secret-key/vault-secret.key",
+		existing:        filepath.Join(existing, "vault-secret.key"),
+		"keys/cap.key":  "keys/cap.key",
+		"":              "vault-secret.key",
+		"a/b/":          "a/b/vault-secret.key",
+		"not-yet-a-dir": "not-yet-a-dir",
+	} {
+		if got := ResolveOut(in, DefaultKeyName); got != want {
+			t.Errorf("ResolveOut(%q) = %q, want %q", in, got, want)
+		}
+	}
+	s := &Share{Index: 2, Total: 6}
+	for in, want := range map[string]string{
+		"secret-key/":  "secret-key/vault-secret.share2-of-6.key",
+		"keys/cap.key": "keys/cap.share2-of-6.key",
+		"keys/.key":    "keys/vault-secret.share2-of-6.key",
+		"cap":          "cap.share2-of-6.key",
+	} {
+		if got := ShareFileName(in, s); got != want {
+			t.Errorf("ShareFileName(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// 実際に init でフォルダ指定 (分割あり・なし)
+	id, _ := age.GenerateX25519Identity()
+	files, err := WriteKeys(id, filepath.Join(d, "shares")+"/", 3, 6)
+	if err != nil || len(files) != 6 || filepath.Base(files[0]) != "vault-secret.share1-of-6.key" {
+		t.Fatalf("files = %v, err = %v", files, err)
+	}
+	files, err = WriteKeys(id, existing, 0, 0)
+	if err != nil || files[0] != filepath.Join(existing, "vault-secret.key") {
+		t.Fatalf("files = %v, err = %v", files, err)
+	}
+	if _, err := LoadKeys(files); err != nil {
+		t.Fatal(err)
+	}
+}

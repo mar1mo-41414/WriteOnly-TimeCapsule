@@ -168,10 +168,33 @@ func CombineShares(shares []*Share) (*age.X25519Identity, error) {
 	return id, nil
 }
 
+// DefaultKeyName は --key-out にフォルダだけが指定されたときに使うファイル名。
+const DefaultKeyName = "vault-secret.key"
+
+// ResolveOut は出力先にフォルダが指定された場合 ("keys/" や既存のフォルダ)、
+// その中の defaultName を指すパスにする。ファイル名が指定されていればそのまま返す。
+func ResolveOut(p, defaultName string) string {
+	if p == "" {
+		return defaultName
+	}
+	if strings.HasSuffix(p, "/") || strings.HasSuffix(p, string(filepath.Separator)) {
+		return filepath.Join(p, defaultName)
+	}
+	if st, err := os.Stat(p); err == nil && st.IsDir() {
+		return filepath.Join(p, defaultName)
+	}
+	return p
+}
+
 // ShareFileName は分割時の欠片ファイル名を返す (例: vault-secret.share1-of-3.key)。
 func ShareFileName(keyOut string, s *Share) string {
-	base := strings.TrimSuffix(keyOut, filepath.Ext(keyOut))
-	return fmt.Sprintf("%s.share%d-of-%d.key", base, s.Index, s.Total)
+	keyOut = ResolveOut(keyOut, DefaultKeyName)
+	dir, name := filepath.Split(keyOut)
+	stem := strings.TrimSuffix(name, filepath.Ext(name))
+	if stem == "" || stem == "." { // ".key" のように名前部分が無い場合
+		stem = strings.TrimSuffix(DefaultKeyName, filepath.Ext(DefaultKeyName))
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s.share%d-of-%d.key", stem, s.Index, s.Total))
 }
 
 // writeKeyFile は鍵ファイルを O_EXCL・0600 で作る (親ディレクトリは自動作成)。
@@ -198,6 +221,7 @@ func writeKeyFile(path, content string) error {
 func WriteKeys(id *age.X25519Identity, keyOut string, threshold, total int) ([]string, error) {
 	recipient := id.Recipient().String()
 	now := time.Now().Format(time.RFC3339)
+	keyOut = ResolveOut(keyOut, DefaultKeyName)
 	if threshold == 0 {
 		content := fmt.Sprintf("# WriteOnly-TimeCapsule secret key\n# created: %s\n# public key: %s\n%s\n", now, recipient, id.String())
 		return []string{keyOut}, writeKeyFile(keyOut, content)

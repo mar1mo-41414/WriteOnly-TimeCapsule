@@ -65,6 +65,8 @@ vault split --key vault-secret.key --shares 3 --threshold 2 --delete-original   
 vault open --key capsule.share1-of-3.key --key capsule.share3-of-3.key --and-destroy-key
 ```
 
+`--key-out` accepts a file name (`keys/capsule.key`) or a folder (`keys/`); for a folder the files are named `vault-secret.share1-of-3.key` (or `vault-secret.key` when not split).
+
 A single share reveals nothing about the key. Each share is one ~90-character line, so you can even hand it over on paper (typos are detected).
 
 ### Time lock ("not before year X")

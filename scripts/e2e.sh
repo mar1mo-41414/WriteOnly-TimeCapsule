@@ -233,6 +233,24 @@ sleep 8
 expect_fail "別カプセルの .tlock で開封 (日時後)" "鍵が一致しません" v open -V t.dat --key u.dat.tlock --out o-other
 expect_ok  "自分の .tlock なら開く" v open -V t.dat --out o-own
 
+# --key-out などにフォルダを指定した場合 (名前が空の隠しファイルにならない)
+section "7. 出力先にフォルダを指定" outdir
+expect_ok  "init --key-out secret-key/ (分割 + タイムロック)" v init --size 256K --shares 6 --threshold 3 --timelock +1y --key-out secret-key/
+check      "欠片は secret-key/vault-secret.shareN-of-6.key" sh -c 'for i in 1 2 3 4 5 6; do test -e secret-key/vault-secret.share$i-of-6.key || exit 1; done'
+check      "名前の無い隠しファイルができていない" sh -c 'test -z "$(ls -A secret-key | grep "^\\.")"'
+check      "表示にも正しいファイル名" grep -q "secret-key/vault-secret.share1-of-6.key" "$LOG"
+mkdir usb
+expect_ok  "init --key-out <既存フォルダ> (スラッシュなし・分割なし)" v init -V b.dat --size 64K --key-out usb
+check      "usb/vault-secret.key ができて表示も一致" sh -c "test -e usb/vault-secret.key && grep -q 'usb/vault-secret.key' '$LOG'"
+expect_ok  "split --key-out sp/" v split --key usb/vault-secret.key --shares 3 --threshold 2 --key-out sp/
+check      "sp/vault-secret.shareN-of-3.key" test -e sp/vault-secret.share3-of-3.key
+expect_ok  "timelock --out tlo/" v timelock -V b.dat --key usb/vault-secret.key --until +1y --out tlo/
+check      "tlo/b.dat.tlock" test -e tlo/b.dat.tlock
+mkdir sub
+expect_ok  "--timelock-out tl/ (コンテナはサブフォルダ)" v init -V sub/c.dat --size 64K --timelock +1y --timelock-out tl/ --key-out k/
+check      "tl/c.dat.tlock と k/vault-secret.key" test -e tl/c.dat.tlock -a -e k/vault-secret.key
+expect_ok  "フォルダに作った欠片3個で開封できる" v open --key secret-key/vault-secret.share1-of-6.key --key secret-key/vault-secret.share4-of-6.key --key secret-key/vault-secret.share6-of-6.key --out o
+
 # ---------------------------------------------------------------
 printf '\n\033[1m結果: %d OK / %d NG\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

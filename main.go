@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +51,15 @@ func main() {
 
 func timelockPath() string {
 	return containerPath + ".tlock"
+}
+
+// resolveTimelockOut はタイムロック鍵の出力先を決める。
+// 未指定なら <コンテナ>.tlock、フォルダ指定ならその中の <コンテナ名>.tlock。
+func resolveTimelockOut(out string) string {
+	if out == "" {
+		return timelockPath()
+	}
+	return vault.ResolveOut(out, filepath.Base(timelockPath()))
 }
 
 func fileExists(p string) bool {
@@ -114,9 +124,7 @@ func initCmd() *cobra.Command {
 					return err
 				}
 			}
-			if tlockOut == "" {
-				tlockOut = timelockPath()
-			}
+			tlockOut = resolveTimelockOut(tlockOut)
 			for _, p := range []string{containerPath, pubkeyPath(), tlockOut} {
 				if fileExists(p) {
 					return fmt.Errorf("ここには既にカプセルがあります: %s (上書きはしません。別の場所で実行するか、-V で別の名前を指定してください)", p)
@@ -138,7 +146,7 @@ func initCmd() *cobra.Command {
 				fmt.Println()
 			}
 			if threshold == 0 {
-				fmt.Printf("秘密鍵:   %s\n", keyOut)
+				fmt.Printf("秘密鍵:   %s\n", files[0])
 				fmt.Println()
 				fmt.Println("!! 秘密鍵はこの端末から移動してください (USBメモリ・オフライン端末・紙など)。")
 				fmt.Println("!! 秘密鍵を失うとコンテナは二度と開封できません。")
@@ -188,9 +196,7 @@ func timelockCmd() *cobra.Command {
 			if r, err := vault.LoadRecipient(pubkeyPath()); err == nil && r.String() != id.Recipient().String() {
 				return errors.New("鍵がこのコンテナの公開鍵と一致しません")
 			}
-			if out == "" {
-				out = timelockPath()
-			}
+			out = resolveTimelockOut(out)
 			if err := vault.WriteTimelock(out, id, unlock); err != nil {
 				return err
 			}

@@ -78,6 +78,9 @@ vault split --key vault-secret.key --shares 3 --threshold 2 --delete-original
 vault open --key capsule.share1-of-3.key --key capsule.share3-of-3.key --and-destroy-key
 ```
 
+`--key-out` にはファイル名 (`keys/capsule.key`) でもフォルダ (`keys/`) でも指定できます。
+フォルダを指定した場合は、その中に `vault-secret.share1-of-3.key` のような名前で作られます (分割しないときは `vault-secret.key`)。
+
 欠片1つだけでは、元の鍵の手がかりは一切得られません。欠片の中身は約90文字の1行なので、紙に書き写して渡すこともできます (書き写しミスは自動で検出します)。
 
 ### タイムロックを付ける (「〇年後まで開かない」)
