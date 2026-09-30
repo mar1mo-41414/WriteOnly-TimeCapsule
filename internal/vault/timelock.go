@@ -214,7 +214,7 @@ func TimelockRound(b []byte) (uint64, error) {
 	}
 	hdr, err := age.ExtractHeader(armor.NewReader(bytes.NewReader(a)))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("タイムロック鍵が壊れています: %w", err)
 	}
 	sc := bufio.NewScanner(bytes.NewReader(hdr))
 	for sc.Scan() {
@@ -279,7 +279,7 @@ func UnlockTimelock(b []byte) (*age.X25519Identity, error) {
 		case n.lastErr != nil:
 			return nil, n.lastErr
 		}
-		return nil, err
+		return nil, fmt.Errorf("タイムロック鍵が壊れています: %w", err)
 	}
 	return age.ParseX25519Identity(strings.TrimSpace(out.String()))
 }

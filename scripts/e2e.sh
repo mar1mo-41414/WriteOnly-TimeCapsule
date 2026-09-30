@@ -17,6 +17,8 @@ v()    { "$VAULT" "$@" >"$LOG" 2>&1; }
 yes_v(){ echo y | "$VAULT" "$@" >"$LOG" 2>&1; }
 no_v() { echo n | "$VAULT" "$@" >"$LOG" 2>&1; }
 # drand へ届かない状態を再現 (存在しないプロキシ経由にする)
+env_v()  { local e=$1; shift; env "$e" "$VAULT" "$@" >"$LOG" 2>&1; }
+eof_v()  { "$VAULT" "$@" </dev/null >"$LOG" 2>&1; }
 offline_v() { HTTPS_PROXY=http://127.0.0.1:9 "$VAULT" "$@" >"$LOG" 2>&1; }
 # expect_ok <説明> <cmd...> / expect_fail <説明> <エラー文言> <cmd...>
 expect_ok()   { local d=$1; shift; if "$@"; then ok "$d"; else ng "$d"; fi; }
@@ -71,7 +73,7 @@ check      "失敗した keep.bin は入っていない" gone opened/keep.bin
 check      "展開物が元と一致 (同名は big (1).bin)" same_all diary.txt score.csv photo.jpg memo.txt big.bin after.txt
 check      "big (1).bin も一致" cmp -s data/big.bin "opened/big (1).bin"
 check      "コンテナ・秘密鍵・公開鍵が消滅" gone vault.dat usb/secret.key vault.dat.pub
-expect_fail "破壊後は status できない" "no such file" v status
+expect_fail "破壊後は status できない" "カプセルが見つかりません" v status
 
 # ---------------------------------------------------------------
 section "2. 鍵分割で作成 (2-of-3) → 分割鍵で開封・破壊" split
@@ -168,6 +170,68 @@ check      "疎通不可では何も展開・破棄しない" sh -c 'test ! -e x
 expect_ok  "日時後: 鍵指定なしで開封 + 破壊" yes_v open --out opened --and-destroy-key
 check      "展開物が一致" same_all diary.txt photo.jpg
 check      "コンテナ・.tlock・公開鍵が消滅" gone vault.dat vault.dat.tlock vault.dat.pub
+
+# ---------------------------------------------------------------
+section "6. その他の状況 (同時実行・誤操作・破損・ファイル名など)" misc
+corrupt() { python3 -c 'import sys;f=open(sys.argv[1],"r+b");o=int(sys.argv[2]);f.seek(o);b=f.read(1);f.seek(o);f.write(bytes([b[0]^1]))' "$1" "$2"; }
+expect_ok  "init" v init --size 4M --key-out k.key
+mkdir -p src dir; for i in $(seq 1 20); do head -c 30000 /dev/urandom > src/f$i.bin; done
+for i in $(seq 1 20); do "$VAULT" add src/f$i.bin >/dev/null 2>&1 & done; wait
+expect_ok  "同時に20本 add した後に開封" v open --key k.key --out o-conc
+check      "20件すべて取り出せて中身も一致 (ロックで守られている)" sh -c 'for i in $(seq 1 20); do cmp -s src/f$i.bin o-conc/f$i.bin || exit 1; done'
+
+mkdir star && cd star && v init --size 256K --timelock +1y --key-out ../star.key && echo a > a.txt
+expect_ok  "vault add * (カプセル自身のファイルを含む)" v add *
+check      "管理ファイル3つはスキップと表示" test "$(grep -c スキップ "$LOG")" = 3
+check      "a.txt は追加された" grep -q "追加しました: a.txt" "$LOG"
+expect_fail "既存カプセルの場所で init し直す" "既にカプセルがあります" v init --size 256K --key-out new.key
+check      "再 init で既存カプセルは無傷・余計な鍵も残らない" sh -c 'test -e vault.dat -a -e vault.dat.tlock -a ! -e new.key'
+cd ..
+
+mkdir none && cd none
+expect_fail "カプセルが無い場所で add" "カプセルが見つかりません" v add ../src/f1.bin
+expect_fail "カプセルが無い場所で status" "カプセルが見つかりません" v status
+expect_fail "カプセルが無い場所で open" "カプセルが見つかりません" v open --key ../k.key
+cd ..
+expect_ok  "VAULT_PATH でカプセルの場所を指定" env_v VAULT_PATH=star/vault.dat status
+expect_fail "ディレクトリは追加できない" "通常ファイルのみ" v add dir
+expect_fail "存在しないファイル" "no such file" v add nothing.txt
+
+mkdir names && echo 1 > "names/日本語 と 空白 (1).txt" && echo 2 > names/.hidden && : > names/empty
+v init -V n.dat --size 256K --key-out n.key
+expect_ok  "日本語・空白・ドットファイル・0バイトを add" v add -V n.dat "names/日本語 と 空白 (1).txt" names/.hidden names/empty
+expect_ok  "開封" v open -V n.dat --key n.key --out o-names
+check      "日本語・空白の名前もそのまま一致" cmp -s "names/日本語 と 空白 (1).txt" "o-names/日本語 と 空白 (1).txt"
+check      "ドットファイル・0バイトも一致" sh -c 'cmp -s names/.hidden o-names/.hidden && test -e o-names/empty -a ! -s o-names/empty'
+expect_ok  "同じ展開先にもう一度開封" v open -V n.dat --key n.key --out o-names
+check      "既存ファイルは上書きせず別名 (.hidden (1) など) で展開" sh -c 'test -e "o-names/.hidden (1)" -a -e "o-names/日本語 と 空白 (1) (1).txt"'
+expect_ok  "破棄確認で入力なし (EOF)" eof_v open -V n.dat --key n.key --out o-eof --and-destroy-key
+check      "入力なしなら破棄しない" test -e n.dat -a -e n.key
+
+# 破損: 1件目を大きくしてその中央を壊す → 2件目以降は救出、破棄はしない
+v init -V c.dat --size 256K --key-out c.key
+head -c 20000 /dev/urandom > src/big1; echo two > src/two.txt; echo three > src/three.txt
+v add -V c.dat src/big1 src/two.txt src/three.txt
+cp c.dat c2.dat; cp c.dat c3.dat
+corrupt c.dat $((512 + 8 + 10000))
+expect_fail "1件だけ壊れたカプセルを開封 + 破棄" "1 件のファイルが壊れていて" yes_v open -V c.dat --key c.key --out o-corrupt --and-destroy-key
+check      "無事な2件は取り出せる" sh -c 'cmp -s src/two.txt o-corrupt/two.txt && cmp -s src/three.txt o-corrupt/three.txt && test ! -e o-corrupt/big1'
+check      "壊れていたら破棄しない" test -e c.dat -a -e c.key
+corrupt c2.dat $((512 + 3))
+expect_fail "位置情報 (長さ) が壊れたカプセル" "位置情報が壊れていて" v open -V c2.dat --key c.key --out o-corrupt2
+corrupt c3.dat 50
+expect_fail "先頭 (管理情報) が壊れたカプセルを開封" "コンテナが壊れているか" v open -V c3.dat --key c.key --out o-corrupt3
+cp c.dat.pub c3.dat.pub
+expect_fail "先頭が壊れたカプセルには追記もできない" "コンテナが壊れているか" v add -V c3.dat src/two.txt
+
+# タイムロック鍵の破損・別カプセルのもの
+v init -V t.dat --size 256K --timelock +2s --key-out t.key
+v init -V u.dat --size 256K --timelock +2s --key-out u.key
+head -c 300 t.dat.tlock > broken.tlock
+expect_fail "壊れた .tlock" "タイムロック鍵が壊れています" v open -V t.dat --key broken.tlock
+sleep 8
+expect_fail "別カプセルの .tlock で開封 (日時後)" "鍵が一致しません" v open -V t.dat --key u.dat.tlock --out o-other
+expect_ok  "自分の .tlock なら開く" v open -V t.dat --out o-own
 
 # ---------------------------------------------------------------
 printf '\n\033[1m結果: %d OK / %d NG\033[0m\n' "$PASS" "$FAIL"

@@ -64,6 +64,28 @@ func confirm(prompt string) bool {
 	return a == "y" || a == "yes"
 }
 
+// requireContainer はコンテナが無いときに分かりやすいエラーを返す。
+func requireContainer() error {
+	if fileExists(containerPath) {
+		return nil
+	}
+	return fmt.Errorf("カプセルが見つかりません: %s (別の場所にある場合は -V <パス> か環境変数 VAULT_PATH で指定してください)", containerPath)
+}
+
+// isOwnFile は p がこのカプセル自身の管理ファイル (コンテナ・公開鍵・タイムロック鍵) かどうかを返す。
+func isOwnFile(p string) bool {
+	st, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	for _, own := range []string{containerPath, pubkeyPath(), timelockPath()} {
+		if ost, err := os.Stat(own); err == nil && os.SameFile(st, ost) {
+			return true
+		}
+	}
+	return false
+}
+
 func pubkeyPath() string {
 	if pubPath != "" {
 		return pubPath
@@ -94,6 +116,11 @@ func initCmd() *cobra.Command {
 			}
 			if tlockOut == "" {
 				tlockOut = timelockPath()
+			}
+			for _, p := range []string{containerPath, pubkeyPath(), tlockOut} {
+				if fileExists(p) {
+					return fmt.Errorf("ここには既にカプセルがあります: %s (上書きはしません。別の場所で実行するか、-V で別の名前を指定してください)", p)
+				}
 			}
 			recipient, files, err := vault.Init(vault.InitOptions{
 				Container: containerPath, PubKey: pubkeyPath(), KeyOut: keyOut,
@@ -214,12 +241,19 @@ func addCmd() *cobra.Command {
 		Short: "ファイルを暗号化してコンテナに追記する",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, files []string) error {
+			if err := requireContainer(); err != nil {
+				return err
+			}
 			r, err := vault.LoadRecipient(pubkeyPath())
 			if err != nil {
 				return err
 			}
 			failed := 0
 			for _, p := range files {
+				if isOwnFile(p) {
+					fmt.Fprintf(os.Stderr, "スキップ: %s はこのカプセル自身のファイルです\n", p)
+					continue
+				}
 				if err := vault.Add(containerPath, r, p); err != nil {
 					failed++
 					if errors.Is(err, vault.ErrNoSpace) {
@@ -251,6 +285,9 @@ func statusCmd() *cobra.Command {
 		Short: "コンテナの存在と外形サイズだけを表示する",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireContainer(); err != nil {
+				return err
+			}
 			st, err := os.Stat(containerPath)
 			if err != nil {
 				return err
@@ -289,6 +326,9 @@ func openCmd() *cobra.Command {
 		Short: "秘密鍵でコンテナを開封し、全ファイルを展開する",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireContainer(); err != nil {
+				return err
+			}
 			if len(keyPaths) == 0 {
 				if !fileExists(timelockPath()) {
 					return errors.New("--key で秘密鍵・鍵の欠片・タイムロック鍵のいずれかを指定してください")
@@ -308,6 +348,13 @@ func openCmd() *cobra.Command {
 			opened, err := vault.Open(containerPath, id, outDir)
 			for _, o := range opened {
 				fmt.Printf("%s  %10d  %s\n", o.Meta.AddedAt.Local().Format("2006-01-02 15:04"), o.Meta.Size, o.Path)
+			}
+			var ce *vault.CorruptError
+			if errors.As(err, &ce) {
+				if len(opened) > 0 {
+					fmt.Printf("\n無事だった %d 件を %s に取り出しました。\n", len(opened), outDir)
+				}
+				return fmt.Errorf("%w\n(コンテナと鍵は破棄していません)", err)
 			}
 			if err != nil {
 				return fmt.Errorf("開封に失敗しました (コンテナと鍵は破棄していません): %w", err)

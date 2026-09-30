@@ -156,7 +156,7 @@ func Add(containerPath string, r *age.X25519Recipient, srcPath string) error {
 		return err
 	}
 	if !st.Mode().IsRegular() {
-		return fmt.Errorf("%s: 通常ファイルのみ追加できます", srcPath)
+		return errors.New("通常ファイルのみ追加できます (ディレクトリ等は不可)")
 	}
 
 	f, err := os.OpenFile(containerPath, os.O_RDWR, 0)
@@ -164,6 +164,9 @@ func Add(containerPath string, r *age.X25519Recipient, srcPath string) error {
 		return err
 	}
 	defer f.Close()
+	if err := lockFile(f, true); err != nil {
+		return err
+	}
 	cst, err := f.Stat()
 	if err != nil {
 		return err
@@ -253,6 +256,9 @@ func Open(containerPath string, id *age.X25519Identity, outDir string) ([]Opened
 		return nil, err
 	}
 	defer f.Close()
+	if err := lockFile(f, false); err != nil {
+		return nil, err
+	}
 	sb, err := readSuperblock(f, id.Recipient().String())
 	if err != nil {
 		return nil, err
@@ -261,33 +267,51 @@ func Open(containerPath string, id *age.X25519Identity, outDir string) ([]Opened
 		return nil, err
 	}
 
+	// 1件が壊れていても、長さ情報さえ読めれば次のレコードへ進んで残りを救出する。
 	var out []Opened
+	var broken []int
 	pos, end := int64(superblockSize), superblockSize+sb.used
-	for pos < end {
-		if pos+lenPrefixSize > end {
-			return out, ErrMismatch
-		}
+	for i := 1; pos < end; i++ {
 		lr, err := newMaskedReader(f, &sb.keys, pos, pos+lenPrefixSize)
 		if err != nil {
 			return out, err
 		}
 		var plen [lenPrefixSize]byte
-		if _, err := io.ReadFull(lr, plen[:]); err != nil {
-			return out, err
-		}
+		_, rerr := io.ReadFull(lr, plen[:])
 		n := int64(binary.BigEndian.Uint64(plen[:]))
 		start := pos + lenPrefixSize
-		if n <= 0 || n > end-start {
-			return out, ErrMismatch
+		if rerr != nil || n <= 0 || n > end-start {
+			return out, &CorruptError{Broken: broken, TruncatedAt: i}
 		}
 		o, err := openRecord(f, sb, id, start, start+n, outDir)
 		if err != nil {
-			return out, fmt.Errorf("レコード %d の復号に失敗: %w", len(out)+1, err)
+			broken = append(broken, i)
+		} else {
+			out = append(out, o)
 		}
-		out = append(out, o)
 		pos = start + n
 	}
+	if len(broken) > 0 {
+		return out, &CorruptError{Broken: broken}
+	}
 	return out, nil
+}
+
+// CorruptError はコンテナの一部が壊れていて取り出せなかったことを表す。
+type CorruptError struct {
+	Broken      []int // 壊れていて復号できなかったレコード番号 (追加順、1始まり)
+	TruncatedAt int   // 0 以外なら、このレコード以降は位置情報が壊れていて読めない
+}
+
+func (e *CorruptError) Error() string {
+	var parts []string
+	if len(e.Broken) > 0 {
+		parts = append(parts, fmt.Sprintf("%d 件のファイルが壊れていて取り出せません (追加した順で %v 番目)", len(e.Broken), e.Broken))
+	}
+	if e.TruncatedAt > 0 {
+		parts = append(parts, fmt.Sprintf("%d 番目以降のファイルは位置情報が壊れていて読めません", e.TruncatedAt))
+	}
+	return "コンテナの一部が壊れています: " + strings.Join(parts, "、")
 }
 
 func openRecord(f *os.File, sb *superblock, id *age.X25519Identity, start, end int64, outDir string) (Opened, error) {
@@ -347,6 +371,9 @@ func safeName(name string) string {
 func createUnique(dir, name string, perm os.FileMode) (*os.File, string, error) {
 	ext := filepath.Ext(name)
 	stem := strings.TrimSuffix(name, ext)
+	if stem == "" { // ".bashrc" のようなドットファイルは全体を名前として扱う
+		stem, ext = name, ""
+	}
 	for i := 0; ; i++ {
 		cand := name
 		if i > 0 {

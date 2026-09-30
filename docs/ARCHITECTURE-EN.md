@@ -18,6 +18,9 @@
 - **Write offset**: sealed in the superblock with XChaCha20-Poly1305; there is no plaintext header
 - **Opening**: derive the public key from the secret key → unmask → age-decrypt each record → extract. Directory components are stripped from file names (path traversal), duplicates become `name (1).ext`
 - **No space**: `add` only says "容量不足" (no space). A partially written record never advances the offset, so existing records stay intact
+- **Concurrency**: `add` takes an exclusive `flock` on the container and `open` a shared one, so simultaneous `add`s queue up instead of overwriting each other
+- **Salvage**: if one file's ciphertext is corrupted, opening skips it and continues as long as its length field is readable; a corrupted length field makes the rest unreadable. `--and-destroy-key` never destroys a partially corrupted capsule
+- **Foolproofing**: passing the capsule's own files (container, public key, `.tlock`) to `add` skips them (think `vault add *`); `init` refuses to overwrite an existing capsule
 - **Destroy**: 3 random overwrite passes → truncate → rename to a random name → delete (own implementation since macOS has no `shred`). Targets: container, the key files used to open, `<container>.tlock`
 - The format has no OS-dependent parts (integers are big endian), so containers can move between macOS and Linux
 
@@ -65,5 +68,5 @@ That signature is created only at that time by a threshold of the operators, so 
 
 ```bash
 make test                              # unit tests (includes live drand access; VAULT_OFFLINE=1 skips it)
-make build && scripts/e2e.sh ./vault   # end-to-end CLI test (89 checks, ~1 min, needs drand)
+make build && scripts/e2e.sh ./vault   # end-to-end CLI test (120 checks, ~1 min, needs drand)
 ```
