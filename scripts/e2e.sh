@@ -251,6 +251,30 @@ expect_ok  "--timelock-out tl/ (コンテナはサブフォルダ)" v init -V su
 check      "tl/c.dat.tlock と k/vault-secret.key" test -e tl/c.dat.tlock -a -e k/vault-secret.key
 expect_ok  "フォルダに作った欠片3個で開封できる" v open --key secret-key/vault-secret.share1-of-6.key --key secret-key/vault-secret.share4-of-6.key --key secret-key/vault-secret.share6-of-6.key --out o
 
+section "8. コメント (コンテナに平文で埋め込むメモ)" comment
+expect_ok  "init --comment" v init --size 1M --comment "2027年春の卒業記念。写真と寄せ書き" --key-out k.key
+check      "作成時にコメントを表示" grep -q "コメント: 2027年春の卒業記念。写真と寄せ書き" "$LOG"
+check      ".note のような別ファイルは作らない" sh -c 'test "$(ls | sort | tr "\n" " ")" = "k.key vault.dat vault.dat.pub "'
+for i in 1 2 3; do head -c 100000 /dev/urandom > f$i; v add f$i; done
+expect_ok  "3回 add した後の status" v status
+check      "add してもコメントは残る" grep -q "コメント: 2027年春の卒業記念。写真と寄せ書き" "$LOG"
+check      "コメントはコンテナに平文で入っている" grep -q -a "2027年春の卒業記念" vault.dat
+mkdir moved && cp vault.dat moved/
+expect_ok  "コンテナだけ別の場所へ移して status (公開鍵なし)" v status -V moved/vault.dat
+check      "移した先でもコメントが読める" grep -q "コメント: 2027年春の卒業記念" "$LOG"
+expect_ok  "開封" v open --key k.key --out o
+check      "開封時にもコメントを表示" grep -q "コメント: 2027年春の卒業記念" "$LOG"
+check      "中身は3件とも一致" sh -c 'for i in 1 2 3; do cmp -s f$i o/f$i || exit 1; done'
+expect_ok  "複数行のコメント" v init -V m.dat --size 64K --key-out m.key --comment "$(printf '1行目\n2行目')"
+expect_ok  "複数行の status" v status -V m.dat
+check      "2行目も表示" grep -q "2行目" "$LOG"
+expect_fail "長すぎるコメント (150文字)" "コメントが長すぎます" v init -V l.dat --size 64K --key-out l.key --comment "$(printf 'あ%.0s' $(seq 1 150))"
+check      "長すぎて失敗した init は何も残さない" gone l.dat l.dat.pub l.key
+expect_ok  "コメントなしのカプセル" v init -V nc.dat --size 64K --key-out nc.key
+expect_ok  "コメントなしの status" v status -V nc.dat
+check      "コメント行は出ない" sh -c "! grep -q コメント '$LOG'"
+check      "コメントなしのコンテナには目印も入らない" sh -c '! grep -q -a WOTCNOTE nc.dat'
+
 # ---------------------------------------------------------------
 printf '\n\033[1m結果: %d OK / %d NG\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -104,7 +104,7 @@ func pubkeyPath() string {
 }
 
 func initCmd() *cobra.Command {
-	var sizeStr, keyOut, unlockStr, tlockOut string
+	var sizeStr, keyOut, unlockStr, tlockOut, comment string
 	var threshold, shares int
 	c := &cobra.Command{
 		Use:   "init",
@@ -116,6 +116,9 @@ func initCmd() *cobra.Command {
 			}
 			size, err := parseSize(sizeStr)
 			if err != nil {
+				return err
+			}
+			if comment, err = vault.NormalizeComment(comment); err != nil {
 				return err
 			}
 			var unlock time.Time
@@ -134,12 +137,17 @@ func initCmd() *cobra.Command {
 				Container: containerPath, PubKey: pubkeyPath(), KeyOut: keyOut,
 				Size: size, Threshold: threshold, Shares: shares,
 				Unlock: unlock, TimelockOut: tlockOut,
+				Comment: comment,
 			})
 			if err != nil {
 				return err
 			}
 			fmt.Printf("コンテナを作成しました: %s (%s)\n", containerPath, sizeStr)
 			fmt.Printf("公開鍵:   %s\n          %s\n", pubkeyPath(), recipient)
+			if comment != "" {
+				printComment(comment)
+				fmt.Println("          (コンテナ自身に平文で埋め込みました。鍵が無くても vault status で誰でも読めます)")
+			}
 			if !unlock.IsZero() {
 				printTimelock(tlockOut)
 				fmt.Println("以下の鍵は「非常口」です (drand が使えなくなったときや、どうしても早く開けたいとき用)。")
@@ -160,8 +168,25 @@ func initCmd() *cobra.Command {
 	c.Flags().StringVar(&keyOut, "key-out", "vault-secret.key", "秘密鍵の出力先 (分割時は欠片ファイル名の元になる)")
 	c.Flags().StringVar(&unlockStr, "timelock", "", "この日時まで開封できないタイムロック鍵も作る (例: 2036-03-20, +10y)")
 	c.Flags().StringVar(&tlockOut, "timelock-out", "", "タイムロック鍵の出力先 (既定: <コンテナ>.tlock)")
+	c.Flags().StringVar(&comment, "comment", "", fmt.Sprintf("カプセルの用途などの短いメモ。コンテナに平文で埋め込み、status で確認できる (最大 %d バイト)", vault.MaxCommentBytes))
 	addSplitFlags(c, &threshold, &shares)
 	return c
+}
+
+// printComment はコメントを表示する (複数行なら2行目以降を字下げ)。
+func printComment(comment string) {
+	fmt.Printf("コメント: %s\n", strings.ReplaceAll(comment, "\n", "\n          "))
+}
+
+// showComment はコンテナに埋め込まれたコメントがあれば表示する。
+func showComment() {
+	comment, ok, err := vault.ReadComment(containerPath)
+	switch {
+	case err != nil:
+		fmt.Printf("コメント: (読み込めません: %v)\n", err)
+	case ok:
+		printComment(comment)
+	}
 }
 
 func printTimelock(path string) {
@@ -300,6 +325,7 @@ func statusCmd() *cobra.Command {
 			}
 			fmt.Printf("コンテナ: %s\n", containerPath)
 			fmt.Printf("サイズ:   %d バイト (外形。中身の量とは無関係)\n", st.Size())
+			showComment()
 			r, err := vault.LoadRecipient(pubkeyPath())
 			if err != nil {
 				fmt.Printf("公開鍵:   読み込めません (%v)\n", err)
@@ -341,6 +367,7 @@ func openCmd() *cobra.Command {
 				}
 				keyPaths = []string{timelockPath()}
 			}
+			showComment()
 			id, err := vault.LoadKeys(keyPaths)
 			if errors.Is(err, vault.ErrTooEarly) || errors.Is(err, vault.ErrDrandUnreachable) {
 				return fmt.Errorf("%w\n(非常口: 秘密鍵、または鍵の欠片を必要数 --key で渡せば今すぐ開けられます)", err)

@@ -310,3 +310,94 @@ func TestAddRejectsNonRegular(t *testing.T) {
 		t.Error("存在しないファイルを追加できてしまった")
 	}
 }
+
+func TestComment(t *testing.T) {
+	d := t.TempDir()
+	o := InitOptions{
+		Container: filepath.Join(d, "vault.dat"), PubKey: filepath.Join(d, "vault.dat.pub"),
+		KeyOut: filepath.Join(d, "secret.key"), Size: 1 << 20,
+		Comment: "  2027年春の卒業記念\n写真と寄せ書き  ",
+	}
+	if _, _, err := Init(o); err != nil {
+		t.Fatal(err)
+	}
+	want := "2027年春の卒業記念\n写真と寄せ書き"
+	check := func(when string) {
+		t.Helper()
+		got, ok, err := ReadComment(o.Container)
+		if err != nil || !ok || got != want {
+			t.Fatalf("%s: comment = %q, ok=%v, err=%v", when, got, ok, err)
+		}
+	}
+	check("作成直後")
+
+	// 何度追記しても消えない
+	r, _ := LoadRecipient(o.PubKey)
+	for i := range 5 {
+		if err := Add(o.Container, r, writeFile(t, d, "f"+strconv.Itoa(i), randBytes(10000))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check("5回追記後")
+
+	// コンテナだけを別の場所へ移しても (公開鍵なしで) 読める
+	moved := filepath.Join(t.TempDir(), "moved.dat")
+	copyFile(t, o.Container, moved)
+	if got, ok, _ := ReadComment(moved); !ok || got != want {
+		t.Fatalf("移動後: %q", got)
+	}
+
+	// コメントがあっても開封結果は変わらない
+	id, _ := LoadIdentity(o.KeyOut)
+	if opened, err := Open(o.Container, id, filepath.Join(d, "out")); err != nil || len(opened) != 5 {
+		t.Fatalf("opened=%d err=%v", len(opened), err)
+	}
+
+	// コメント領域が壊れたら「壊れている」と分かる (開封には影響しない)
+	broken := filepath.Join(d, "broken.dat")
+	copyFile(t, o.Container, broken)
+	corruptAt(t, broken, int64(noteOffset+noteHeader+2))
+	if _, _, err := ReadComment(broken); err == nil {
+		t.Error("壊れたコメントを検出できない")
+	}
+	if _, err := Open(broken, id, filepath.Join(d, "out2")); err != nil {
+		t.Errorf("コメント領域の破損で開封できなくなった: %v", err)
+	}
+}
+
+func TestNoComment(t *testing.T) {
+	// コメント無し (以前のバージョンで作ったものと同じ) は「コメントなし」。何度作っても誤検出しない
+	for range 20 {
+		fx := newVault(t, MinSize)
+		if c, ok, err := ReadComment(fx.container); ok || err != nil {
+			t.Fatalf("コメントが無いのに検出: %q, %v", c, err)
+		}
+	}
+}
+
+func TestCommentLimits(t *testing.T) {
+	if noteOffset != 72 || MaxCommentBytes != 425 {
+		t.Fatalf("レイアウトが変わった: noteOffset=%d max=%d", noteOffset, MaxCommentBytes)
+	}
+	ok := strings.Repeat("あ", MaxCommentBytes/3) // 141文字 = 423バイト
+	if _, err := NormalizeComment(ok); err != nil {
+		t.Errorf("上限内なのに拒否: %v", err)
+	}
+	if _, err := NormalizeComment(ok + "あ"); err == nil {
+		t.Error("上限超えを受け付けた")
+	}
+	for _, bad := range []string{"\x00null", "bell\a", string([]byte{0xff, 0xfe})} {
+		if _, err := NormalizeComment(bad); err == nil {
+			t.Errorf("%q を受け付けた", bad)
+		}
+	}
+	d := t.TempDir()
+	_, _, err := Init(InitOptions{Container: filepath.Join(d, "v.dat"), PubKey: filepath.Join(d, "v.pub"),
+		KeyOut: filepath.Join(d, "k.key"), Size: MinSize, Comment: ok + "あ"})
+	if err == nil {
+		t.Fatal("長すぎるコメントで init できた")
+	}
+	if ents, _ := os.ReadDir(d); len(ents) != 0 {
+		t.Errorf("失敗した init がファイルを残した: %v", ents)
+	}
+}

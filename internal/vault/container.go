@@ -95,7 +95,8 @@ func writeSuperblock(f *os.File, sb *superblock) error {
 	binary.BigEndian.PutUint64(plain[8:], uint64(sb.used))
 	sealed := aead.Seal(nil, nonce, plain, sb.salt)
 	copy(buf[saltSize+len(nonce):], sealed)
-	if _, err := f.WriteAt(buf, 0); err != nil {
+	// 書き換えるのは管理情報の部分だけ。その後ろ (コメント領域・乱数) は init 時のまま残す。
+	if _, err := f.WriteAt(buf[:noteOffset], 0); err != nil {
 		return err
 	}
 	return f.Sync()

@@ -8,14 +8,15 @@
 ## Container format
 
 ```
-[0, 512)     superblock: salt(16) | nonce(24) | sealed used-bytes | random
+[0, 512)     superblock: salt(16) | nonce(24) | sealed used-bytes(32) | comment area or random
 [512, size)  data area: [length(8) | age ciphertext] records packed from the start; the rest is random
 ```
 
 - **Fixed size, not sparse**: `init` writes random bytes over the whole file. Neither `ls` nor `du` changes after appending; the container's mtime is restored too
 - **One file = one record**: metadata (name, size, mtime, mode, MIME type, added-at) and body are encrypted together with [age](https://age-encryption.org/) (X25519 + ChaCha20-Poly1305)
 - **Mask layer**: the whole data area is XORed with an XChaCha20 keystream whose key is derived (HKDF) from the public key and a per-container salt, so age's text headers (`age-encryption.org/v1`, …) and record boundaries are indistinguishable from the random free space
-- **Write offset**: sealed in the superblock with XChaCha20-Poly1305; there is no plaintext header
+- **Write offset**: sealed in the superblock with XChaCha20-Poly1305; there is no plaintext header. Appending rewrites only the first 72 bytes
+- **Comment**: `init --comment` stores the note in plaintext from byte 72 of the superblock as `"WOTCNOTE" | version(1) | length(2) | CRC32(4) | text` (max 425 bytes), readable without any key. Without a comment the area stays random, so a false match of magic + CRC is practically impossible (this also covers capsules made by older versions). Running `add` with v1.0.3 or older overwrites the area with random bytes and erases the comment
 - **Opening**: derive the public key from the secret key → unmask → age-decrypt each record → extract. Directory components are stripped from file names (path traversal), duplicates become `name (1).ext`
 - **No space**: `add` only says "容量不足" (no space). A partially written record never advances the offset, so existing records stay intact
 - **Concurrency**: `add` takes an exclusive `flock` on the container and `open` a shared one, so simultaneous `add`s queue up instead of overwriting each other
@@ -68,5 +69,5 @@ That signature is created only at that time by a threshold of the operators, so 
 
 ```bash
 make test                              # unit tests (includes live drand access; VAULT_OFFLINE=1 skips it)
-make build && scripts/e2e.sh ./vault   # end-to-end CLI test (133 checks, ~1 min, needs drand)
+make build && scripts/e2e.sh ./vault   # end-to-end CLI test (153 checks, ~1 min, needs drand)
 ```

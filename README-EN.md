@@ -57,6 +57,16 @@ vault status                           # existence and apparent size only
 vault open --key /Volumes/USB/vault-secret.key --and-destroy-key   # everything comes out, capsule + key destroyed (asks first)
 ```
 
+### Add a comment (a label for the capsule)
+
+```bash
+vault init --size 500M --comment "Graduation 2027: photos and messages"
+vault status    # → shows the comment
+```
+
+The comment is embedded in the container (`vault.dat`) itself, so it travels with the container and can be read with `vault status` without any key.
+It is **not encrypted** — anyone can read it, so don't put secrets in it. Up to 425 bytes (newlines allowed); can only be set at `init`.
+
 ### Split the key ("any 2 of 3")
 
 ```bash

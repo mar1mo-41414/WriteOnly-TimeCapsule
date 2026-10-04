@@ -42,12 +42,17 @@ type InitOptions struct {
 	// 通常の鍵出力 (KeyOut の秘密鍵または欠片) はそのまま非常口として残る。
 	Unlock      time.Time
 	TimelockOut string
+	// Comment が空でなければ、コンテナ内のメモ領域に平文で埋め込む (暗号化しない)。
+	Comment string
 }
 
 // Init は鍵ペアを生成し、固定サイズのコンテナと公開鍵ファイル・秘密鍵ファイル
 // (分割時は欠片ファイル群) を作成する。作成した鍵ファイルの一覧を返す。
 func Init(o InitOptions) (recipient string, keyFiles []string, err error) {
 	if err := checkSize(o.Size); err != nil {
+		return "", nil, err
+	}
+	if o.Comment, err = NormalizeComment(o.Comment); err != nil {
 		return "", nil, err
 	}
 	id, err := age.GenerateX25519Identity()
@@ -107,7 +112,12 @@ func Init(o InitOptions) (recipient string, keyFiles []string, err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	err = writeSuperblock(f, &superblock{salt: salt, keys: k, used: 0})
+	if err = writeSuperblock(f, &superblock{salt: salt, keys: k, used: 0}); err != nil {
+		return "", nil, err
+	}
+	if o.Comment != "" {
+		err = writeComment(f, o.Comment)
+	}
 	return recipient, keyFiles, err
 }
 
