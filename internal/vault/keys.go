@@ -197,6 +197,28 @@ func ShareFileName(keyOut string, s *Share) string {
 	return filepath.Join(dir, fmt.Sprintf("%s.share%d-of-%d.key", stem, s.Index, s.Total))
 }
 
+// MaxKeyFileSize は鍵ファイルとして読み込む最大サイズ。秘密鍵・欠片・タイムロック鍵はどれも 1KB 前後なので、
+// これより大きいものはコンテナなど別のファイルの取り違えとみなす (巨大なファイルを丸ごと読み込まない)。
+const MaxKeyFileSize = 64 << 10
+
+// readKeyFile は鍵・公開鍵などの小さなテキストファイルを読む。フォルダや巨大なファイルは分かりやすく拒否する。
+func readKeyFile(p, hint string) ([]byte, error) {
+	st, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if st.IsDir() {
+		return nil, fmt.Errorf("%s はフォルダです (%s。欠片がフォルダに入っているなら、中のファイルを --key で1つずつ指定します)", p, hint)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s は通常のファイルではありません (%s)", p, hint)
+	}
+	if st.Size() > MaxKeyFileSize {
+		return nil, fmt.Errorf("%s は鍵ファイルではありません (%d バイトもあり大きすぎます。コンテナなど別のファイルを指定していませんか? %s)", p, st.Size(), hint)
+	}
+	return os.ReadFile(p)
+}
+
 // writeKeyFile は鍵ファイルを O_EXCL・0600 で作る (親ディレクトリは自動作成)。
 func writeKeyFile(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -257,7 +279,7 @@ func LoadKeys(paths []string) (*age.X25519Identity, error) {
 	var shares []*Share
 	var timelocks [][]byte
 	for _, p := range paths {
-		b, err := os.ReadFile(p)
+		b, err := readKeyFile(p, "--key には秘密鍵・鍵の欠片・タイムロック鍵のファイルを指定してください")
 		if err != nil {
 			return nil, err
 		}
@@ -283,8 +305,10 @@ func LoadKeys(paths []string) (*age.X25519Identity, error) {
 					return nil, fmt.Errorf("%s:%d: %w", p, n, err)
 				}
 				shares = append(shares, s)
+			case strings.HasPrefix(strings.ToLower(line), "age1"):
+				return nil, fmt.Errorf("%s は公開鍵です (--key には秘密鍵・鍵の欠片・タイムロック鍵を指定してください)", p)
 			default:
-				return nil, fmt.Errorf("%s:%d: 秘密鍵でも鍵の欠片でもない行があります", p, n)
+				return nil, fmt.Errorf("%s:%d: 秘密鍵でも鍵の欠片でもない行があります (コンテナや別のファイルを --key に指定していませんか?)", p, n)
 			}
 		}
 	}

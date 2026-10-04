@@ -22,6 +22,8 @@
 - **No space**: `add` only says "容量不足" (no space). A partially written record never advances the offset, so existing records stay intact
 - **Concurrency**: `add` takes an exclusive `flock` on the container and `open` a shared one, so simultaneous `add`s queue up instead of overwriting each other
 - **Salvage**: if one file's ciphertext is corrupted, opening skips it and continues as long as its length field is readable; a corrupted length field makes the rest unreadable. `--and-destroy-key` never destroys a partially corrupted capsule
+- **Pre-checks before destroying**: every removal (`--and-destroy-key`, `split --delete-original`, `add --delete-original`) first checks that each target can be both overwritten and deleted (file and folder write permission, dangling links, ...) and changes nothing if any check fails. `--and-destroy-key` checks before opening too, so nothing is extracted if the destroy would fail. Symlinks: the target is shredded, then the link removed
+- **Mix-up detection**: `--key` / `--pubkey` reject folders and files over 64 KiB (no slurping a container by mistake), tell which kind of file was given (secret key, share, public key, time-lock key) and never echo a secret key in error messages. `-V` rejects folders, non-regular files and files smaller than the minimum container size. `init` checks for overlapping outputs (e.g. `--key-out` equal to the container) and write permission before creating anything
 - **Foolproofing**: passing the capsule's own files (container, public key, `.tlock`) to `add` skips them (think `vault add *`); `init` refuses to overwrite an existing capsule
 - **Destroy**: 3 random overwrite passes → truncate → rename to a random name → delete (own implementation since macOS has no `shred`). Targets: container, the key files used to open, `<container>.tlock`
 - The format has no OS-dependent parts (integers are big endian), so containers can move between macOS and Linux
@@ -70,5 +72,5 @@ That signature is created only at that time by a threshold of the operators, so 
 
 ```bash
 make test                              # unit tests (includes live drand access; VAULT_OFFLINE=1 skips it)
-make build && scripts/e2e.sh ./vault   # end-to-end CLI test (178 checks, ~1 min, needs drand)
+make build && scripts/e2e.sh ./vault   # end-to-end CLI test (218 checks, ~1 min, needs drand)
 ```

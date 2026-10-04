@@ -122,17 +122,32 @@ func Init(o InitOptions) (recipient string, keyFiles []string, err error) {
 }
 
 // LoadRecipient は公開鍵ファイルを読む。
+// 取り違えて秘密鍵を渡された場合でも、エラーメッセージに鍵の中身は決して含めない。
 func LoadRecipient(pubPath string) (*age.X25519Recipient, error) {
-	b, err := os.ReadFile(pubPath)
+	b, err := readKeyFile(pubPath, "公開鍵は <コンテナ>.pub です")
 	if err != nil {
 		return nil, err
+	}
+	if IsTimelockFile(b) {
+		return nil, fmt.Errorf("%s はタイムロック鍵です (公開鍵は <コンテナ>.pub です)", pubPath)
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		return age.ParseX25519Recipient(line)
+		upper := strings.ToUpper(line)
+		switch {
+		case strings.HasPrefix(upper, "AGE-SECRET-KEY-1"):
+			return nil, fmt.Errorf("%s は秘密鍵です。公開鍵 (<コンテナ>.pub) を指定してください (秘密鍵をこの端末に置いたままにしないよう注意)", pubPath)
+		case strings.HasPrefix(upper, "WOTC-SHARE-1"):
+			return nil, fmt.Errorf("%s は鍵の欠片です。公開鍵 (<コンテナ>.pub) を指定してください", pubPath)
+		}
+		r, err := age.ParseX25519Recipient(line)
+		if err != nil {
+			return nil, fmt.Errorf("%s は公開鍵ファイルではありません (公開鍵は <コンテナ>.pub です)", pubPath)
+		}
+		return r, nil
 	}
 	return nil, fmt.Errorf("%s に公開鍵がありません", pubPath)
 }

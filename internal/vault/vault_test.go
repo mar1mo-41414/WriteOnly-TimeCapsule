@@ -483,3 +483,91 @@ func TestSetComment(t *testing.T) {
 		t.Error("長すぎるコメントを受け付けた")
 	}
 }
+
+func TestShredSymlink(t *testing.T) {
+	d := t.TempDir()
+	target := writeFile(t, d, "real.dat", randBytes(5000))
+	link := filepath.Join(d, "link.dat")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Shred(link); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{target, link} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s が残っている", p)
+		}
+	}
+}
+
+func TestCheckRemovableAndNoPartialShred(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root では権限のテストができない")
+	}
+	d := t.TempDir()
+	data := randBytes(3000)
+
+	ro := writeFile(t, d, "ro.key", data)
+	os.Chmod(ro, 0o400)
+	if err := CheckRemovable(ro); err == nil {
+		t.Error("書き込み禁止のファイルを消去できると判定した")
+	}
+	if err := Shred(ro); err == nil {
+		t.Error("書き込み禁止のファイルを Shred できてしまった")
+	}
+	if b, _ := os.ReadFile(ro); !bytes.Equal(b, data) {
+		t.Error("Shred に失敗したのに中身が変わった")
+	}
+
+	lockedDir := filepath.Join(d, "locked")
+	os.Mkdir(lockedDir, 0o700)
+	inLocked := writeFile(t, lockedDir, "k.key", data)
+	os.Chmod(lockedDir, 0o500)
+	defer os.Chmod(lockedDir, 0o700)
+	if err := Shred(inLocked); err == nil {
+		t.Error("消せないフォルダのファイルを Shred できてしまった")
+	}
+	if b, _ := os.ReadFile(inLocked); !bytes.Equal(b, data) {
+		t.Error("削除できないのに中身だけ消された (空ファイルが残る状態)")
+	}
+
+	if err := CheckRemovable(d); err == nil {
+		t.Error("フォルダを消去できると判定した")
+	}
+	if err := CheckRemovable(filepath.Join(d, "nothing")); err == nil {
+		t.Error("存在しないファイルを消去できると判定した")
+	}
+	dangling := filepath.Join(d, "dangling")
+	os.Symlink(filepath.Join(d, "nowhere"), dangling)
+	if err := CheckRemovable(dangling); err == nil {
+		t.Error("リンク切れを消去できると判定した")
+	}
+}
+
+func TestKeyFileMistakes(t *testing.T) {
+	fx := newVault(t, 256<<10)
+	// --key にフォルダ・コンテナ・公開鍵
+	for _, p := range []string{fx.dir, fx.container, fx.pub} {
+		if _, err := LoadKeys([]string{p}); err == nil {
+			t.Errorf("%s を鍵として受け付けた", p)
+		}
+	}
+	// 公開鍵の代わりに秘密鍵を渡しても、エラーに秘密鍵の中身を出さない
+	_, err := LoadRecipient(fx.sec)
+	if err == nil {
+		t.Fatal("秘密鍵を公開鍵として受け付けた")
+	}
+	id, _ := LoadIdentity(fx.sec)
+	if strings.Contains(strings.ToUpper(err.Error()), "AGE-SECRET-KEY") || strings.Contains(err.Error(), id.String()) {
+		t.Errorf("エラーに秘密鍵が含まれている: %v", err)
+	}
+	// 欠片・コンテナ・フォルダも公開鍵としては拒否
+	shares, _ := SplitIdentity(id, 2, 2)
+	sp := writeFile(t, fx.dir, "share.key", []byte(shares[0].String()+"\n"))
+	for _, p := range []string{sp, fx.container, fx.dir} {
+		if _, err := LoadRecipient(p); err == nil {
+			t.Errorf("%s を公開鍵として受け付けた", p)
+		}
+	}
+}

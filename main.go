@@ -5,11 +5,13 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"filippo.io/age"
@@ -45,7 +47,7 @@ func main() {
 	root.AddCommand(initCmd(), addCmd(), statusCmd(), openCmd(), splitCmd(), timelockCmd(), commentCmd())
 
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "エラー:", err)
+		fmt.Fprintln(os.Stderr, "エラー:", jaErr(err))
 		os.Exit(1)
 	}
 }
@@ -75,12 +77,124 @@ func confirm(prompt string) bool {
 	return a == "y" || a == "yes"
 }
 
-// requireContainer はコンテナが無いときに分かりやすいエラーを返す。
+// requireContainer はコンテナとして扱えるファイルかを確かめ、駄目なら分かりやすいエラーを返す。
 func requireContainer() error {
-	if fileExists(containerPath) {
-		return nil
+	st, err := os.Stat(containerPath)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("カプセルが見つかりません: %s (別の場所にある場合は -V <パス> か環境変数 VAULT_PATH で指定してください)", containerPath)
+	case err != nil:
+		return err
+	case st.IsDir():
+		return fmt.Errorf("%s はフォルダです (カプセルのファイル vault.dat などを -V で指定してください)", containerPath)
+	case !st.Mode().IsRegular():
+		return fmt.Errorf("%s は通常のファイルではないため、カプセルではありません", containerPath)
+	case st.Size() < vault.MinSize:
+		return fmt.Errorf("%s はカプセルではありません (%d バイトしかなく小さすぎます。鍵ファイルなど別のファイルを -V に指定していませんか?)", containerPath, st.Size())
 	}
-	return fmt.Errorf("カプセルが見つかりません: %s (別の場所にある場合は -V <パス> か環境変数 VAULT_PATH で指定してください)", containerPath)
+	f, err := os.Open(containerPath)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// jaErr はよくある OS のエラー (権限なし・見つからない・フォルダ等) を日本語の説明に置き換える。
+func jaErr(err error) string {
+	msg := err.Error()
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		return msg
+	}
+	var ja string
+	switch {
+	case errors.Is(pe.Err, fs.ErrPermission):
+		ja = fmt.Sprintf("%s にアクセスする権限がありません (読み書きの権限を確認してください)", pe.Path)
+	case errors.Is(pe.Err, fs.ErrNotExist):
+		ja = fmt.Sprintf("%s が見つかりません", pe.Path)
+	case errors.Is(pe.Err, fs.ErrExist):
+		ja = fmt.Sprintf("%s は既にあります (上書きはしません)", pe.Path)
+	case errors.Is(pe.Err, syscall.EISDIR):
+		ja = fmt.Sprintf("%s はフォルダです (ファイルを指定してください)", pe.Path)
+	case errors.Is(pe.Err, syscall.ENOTDIR):
+		ja = fmt.Sprintf("%s の途中にフォルダではないものがあります", pe.Path)
+	case errors.Is(pe.Err, syscall.EROFS):
+		ja = fmt.Sprintf("%s は読み取り専用の場所にあります", pe.Path)
+	case errors.Is(pe.Err, syscall.ENOSPC):
+		ja = fmt.Sprintf("%s: ディスクの空きが足りません", pe.Path)
+	default:
+		return msg
+	}
+	return strings.Replace(msg, pe.Error(), ja, 1)
+}
+
+// samePath は2つのパスが同じ場所を指すかを返す (まだ存在しないファイルでも比較できるよう絶対パスで比べる)。
+func samePath(a, b string) bool {
+	if sa, err1 := os.Stat(a); err1 == nil {
+		if sb, err2 := os.Stat(b); err2 == nil {
+			return os.SameFile(sa, sb)
+		}
+	}
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	return err1 == nil && err2 == nil && aa == bb
+}
+
+// checkCreatable は path にファイルを新しく作れるか (途中のフォルダも含めて) を、何も作らずに確かめる。
+func checkCreatable(path string) error {
+	dir := filepath.Dir(path)
+	for {
+		st, err := os.Stat(dir)
+		if err == nil {
+			if !st.IsDir() {
+				return fmt.Errorf("%s を作れません: %s がフォルダではありません", path, dir)
+			}
+			if f, err := os.CreateTemp(dir, ".vault-write-test-*"); err != nil {
+				return fmt.Errorf("%s を作れません: フォルダ %s に書き込み権限がありません", path, dir)
+			} else {
+				f.Close()
+				os.Remove(f.Name())
+			}
+			return nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return fmt.Errorf("%s を作れません", path)
+		}
+		dir = parent
+	}
+}
+
+// checkDestroyable は破棄対象を全部確認し、1つでも消せないものがあればまとめて報告する (何も変更しない)。
+func checkDestroyable(targets []string) error {
+	var probs []string
+	for _, p := range targets {
+		if err := vault.CheckRemovable(p); err != nil {
+			probs = append(probs, "  - "+jaErr(err))
+		}
+	}
+	if len(probs) > 0 {
+		return fmt.Errorf("消去できないファイルがあるため、何も破棄していません:\n%s", strings.Join(probs, "\n"))
+	}
+	return nil
+}
+
+// dedupPaths は同じ場所を指すパスを1つにまとめる。
+func dedupPaths(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		dup := false
+		for _, q := range out {
+			if samePath(p, q) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // isOwnFile は p がこのカプセル自身の管理ファイル (コンテナ・公開鍵・タイムロック鍵) かどうかを返す。
@@ -129,9 +243,39 @@ func initCmd() *cobra.Command {
 				}
 			}
 			tlockOut = resolveTimelockOut(tlockOut)
-			for _, p := range []string{containerPath, pubkeyPath(), tlockOut} {
-				if fileExists(p) {
+			own := []string{containerPath, pubkeyPath()}
+			if !unlock.IsZero() {
+				own = append(own, tlockOut)
+			}
+			// 古い .tlock が残っていると新しいカプセルの開封時に使われてしまうので、タイムロック無しでも確認する
+			for _, p := range append(own, timelockPath()) {
+				if !fileExists(p) {
+					continue
+				}
+				if r, err := vault.LoadRecipient(pubkeyPath()); err == nil && vault.Verify(containerPath, r) == nil {
 					return fmt.Errorf("ここには既にカプセルがあります: %s (上書きはしません。別の場所で実行するか、-V で別の名前を指定してください)", p)
+				}
+				return fmt.Errorf("%s は既にあります (カプセルではないようですが、上書きはしません。-V で別の名前を指定してください)", p)
+			}
+			// 鍵の出力先がコンテナ・公開鍵・タイムロック鍵と同じ場所にならないこと
+			keyPath := vault.ResolveOut(keyOut, vault.DefaultKeyName)
+			if threshold > 0 {
+				keyPath = vault.ShareFileName(keyOut, &vault.Share{Index: 1, Total: shares})
+			}
+			outs := append(slices.Clone(own), keyPath)
+			roles := []string{"コンテナ (-V)", "公開鍵", "タイムロック鍵 (--timelock-out)"}[:len(own)]
+			roles = append(roles, "秘密鍵 (--key-out)")
+			for i := range outs {
+				for j := i + 1; j < len(outs); j++ {
+					if samePath(outs[i], outs[j]) {
+						return fmt.Errorf("出力先が重なっています: %s と %s がどちらも %s になります (別の名前を指定してください)", roles[i], roles[j], outs[i])
+					}
+				}
+			}
+			// 何かを作る前に、全部の出力先に書き込めることを確かめる (途中で失敗してゴミを残さない)
+			for _, p := range append(own, keyPath) {
+				if err := checkCreatable(p); err != nil {
+					return err
 				}
 			}
 			recipient, files, err := vault.Init(vault.InitOptions{
@@ -184,7 +328,7 @@ func showComment() {
 	comment, ok, err := vault.ReadComment(containerPath)
 	switch {
 	case err != nil:
-		fmt.Printf("コメント: (読み込めません: %v)\n", err)
+		fmt.Printf("コメント: (読み込めません: %s)\n", jaErr(err))
 	case ok:
 		printComment(comment)
 	}
@@ -291,12 +435,12 @@ func addCmd() *cobra.Command {
 					if errors.Is(err, vault.ErrNoSpace) {
 						err = vault.ErrNoSpace // 残量のヒントになる情報は出さない
 					}
-					fmt.Fprintf(os.Stderr, "失敗: %s: %v\n", p, err)
+					fmt.Fprintf(os.Stderr, "失敗: %s: %s\n", p, jaErr(err))
 					continue
 				}
 				if deleteOriginal {
 					if err := vault.Shred(p); err != nil {
-						fmt.Fprintf(os.Stderr, "警告: %s は追加済みですが元ファイルの削除に失敗: %v\n", p, err)
+						fmt.Fprintf(os.Stderr, "警告: %s は追加済みですが、元ファイルは消していません: %s\n", p, jaErr(err))
 					}
 				}
 				fmt.Printf("追加しました: %s\n", p)
@@ -329,11 +473,11 @@ func statusCmd() *cobra.Command {
 			showComment()
 			r, err := vault.LoadRecipient(pubkeyPath())
 			if err != nil {
-				fmt.Printf("公開鍵:   読み込めません (%v)\n", err)
+				fmt.Printf("公開鍵:   読み込めません (%s)\n", jaErr(err))
 				return nil
 			}
 			if err := vault.Verify(containerPath, r); err != nil {
-				fmt.Printf("公開鍵:   %s (不一致: %v)\n", pubkeyPath(), err)
+				fmt.Printf("公開鍵:   %s (不一致: %s)\n", pubkeyPath(), jaErr(err))
 				return nil
 			}
 			fmt.Printf("公開鍵:   %s (一致)\n", pubkeyPath())
@@ -369,6 +513,12 @@ func openCmd() *cobra.Command {
 				keyPaths = []string{timelockPath()}
 			}
 			showComment()
+			if destroy {
+				// 展開してから「消せない」と分かるのを避けるため、最初に確認しておく
+				if err := checkDestroyable(destroyTargets(keyPaths)); err != nil {
+					return err
+				}
+			}
 			id, err := vault.LoadKeys(keyPaths)
 			if errors.Is(err, vault.ErrTooEarly) || errors.Is(err, vault.ErrDrandUnreachable) {
 				return fmt.Errorf("%w\n(非常口: 秘密鍵、または鍵の欠片を必要数 --key で渡せば今すぐ開けられます)", err)
@@ -399,14 +549,17 @@ func openCmd() *cobra.Command {
 				fmt.Println("コンテナと秘密鍵はそのまま残っています (--and-destroy-key で破棄)。")
 				return nil
 			}
-			targets := append([]string{containerPath}, keyPaths...)
-			if fileExists(timelockPath()) && !slices.Contains(targets, timelockPath()) {
-				targets = append(targets, timelockPath())
+			targets := destroyTargets(keyPaths)
+			if err := checkDestroyable(targets); err != nil {
+				return err
 			}
 			fmt.Printf("\n%s を上書き消去します。元には戻せません。\n", strings.Join(targets, ", "))
 			if !confirm("本当に破棄しますか？") {
 				fmt.Println("破棄を中止しました。")
 				return nil
+			}
+			if err := checkDestroyable(targets); err != nil { // 確認待ちの間に変わっていないか
+				return err
 			}
 			for _, p := range targets {
 				if err := vault.Shred(p); err != nil {
@@ -425,6 +578,15 @@ func openCmd() *cobra.Command {
 	return c
 }
 
+// destroyTargets は --and-destroy-key で消去するファイル (コンテナ・使った鍵・タイムロック鍵) を返す。
+func destroyTargets(keyPaths []string) []string {
+	targets := append([]string{containerPath}, keyPaths...)
+	if fileExists(timelockPath()) {
+		targets = append(targets, timelockPath())
+	}
+	return dedupPaths(targets)
+}
+
 func splitCmd() *cobra.Command {
 	var keyPath, keyOut string
 	var threshold, shares int
@@ -436,6 +598,11 @@ func splitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if threshold < 2 {
 				return errors.New("--threshold は 2 以上を指定してください")
+			}
+			if deleteOriginal {
+				if err := checkDestroyable([]string{keyPath}); err != nil {
+					return fmt.Errorf("%w\n(--delete-original を付けずに実行すれば、元の鍵を残したまま分割できます)", err)
+				}
 			}
 			id, err := vault.LoadIdentity(keyPath)
 			if err != nil {

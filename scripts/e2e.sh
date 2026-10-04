@@ -123,7 +123,7 @@ expect_fail "欠片の書き写しミス (1文字)" "チェックサム不一致
 expect_fail "秘密鍵の破損 (1文字)" "秘密鍵が壊れています" v open -V other.dat --key typo-secret.key
 expect_fail "鍵でも欠片でもないファイル" "秘密鍵でも鍵の欠片でもない" v open --key junk.key
 expect_fail "空の鍵ファイル" "見つかりません" v open --key empty.key
-expect_fail "存在しない鍵ファイル" "no such file" v open --key nothing.key
+expect_fail "存在しない鍵ファイル" "が見つかりません" v open --key nothing.key
 expect_fail "欠片不足 (1個)" "足りません (2 個必要、1 個" v open --key k/a.share1-of-3.key
 expect_fail "同じ欠片を2回" "足りません (2 個必要、1 個" v open --key k/a.share2-of-3.key --key k/a.share2-of-3.key
 expect_fail "別カプセルの秘密鍵で開封" "鍵が一致しません" v open --key o/other.key
@@ -195,7 +195,7 @@ expect_fail "カプセルが無い場所で open" "カプセルが見つかり�
 cd ..
 expect_ok  "VAULT_PATH でカプセルの場所を指定" env_v VAULT_PATH=star/vault.dat status
 expect_fail "ディレクトリは追加できない" "通常ファイルのみ" v add dir
-expect_fail "存在しないファイル" "no such file" v add nothing.txt
+expect_fail "存在しないファイル" "が見つかりません" v add nothing.txt
 
 mkdir names && echo 1 > "names/日本語 と 空白 (1).txt" && echo 2 > names/.hidden && : > names/empty
 v init -V n.dat --size 256K --key-out n.key
@@ -300,11 +300,82 @@ expect_ok  "コメントが無いのに erase (何もしない)" v comment erase
 expect_fail "長すぎるコメントを add" "コメントが長すぎます" v comment add "$(printf 'あ%.0s' $(seq 1 150))"
 mkdir moved && cp vault.dat moved/
 expect_fail "公開鍵が無い場所では書き換えない" "公開鍵が読めません" v comment add -V moved/vault.dat "x"
-head -c 4096 /dev/urandom > other.bin; cp vault.dat.pub other.bin.pub; HO=$(filehash other.bin)
+head -c 300000 /dev/urandom > other.bin; cp vault.dat.pub other.bin.pub; HO=$(filehash other.bin)
 expect_fail "カプセルでないファイルには書かない" "コンテナが壊れているか" v comment add -V other.bin "x"
 check      "カプセルでないファイルは無傷" test "$(filehash other.bin)" = "$HO"
 expect_ok  "コメント操作の後も開封できる" v open --key k.key --out o
 check      "中身2件とも一致" sh -c 'cmp -s x.txt o/x.txt && cmp -s y.txt o/y.txt'
+
+section "10. 取り違え・おかしな渡し方・権限不足" mistakes
+v init --size 256K --shares 3 --threshold 2 --timelock +1y --key-out k/ --comment ラベル
+v init -V s.dat --size 256K --key-out s.key
+echo hi > a.txt; v add a.txt; v add -V s.dat a.txt
+HV=$(filehash vault.dat); HS=$(filehash s.dat)
+expect_fail "-V に秘密鍵 (status)" "カプセルではありません" v status -V s.key
+expect_fail "-V にフォルダ (add)" "はフォルダです" v add -V k a.txt
+expect_fail "-V に公開鍵 (open)" "カプセルではありません" v open -V vault.dat.pub --key s.key
+expect_fail "--key にフォルダ" "はフォルダです" v open --key k
+expect_fail "--key にコンテナ" "鍵ファイルではありません" v open --key vault.dat
+expect_fail "--key に公開鍵" "は公開鍵です" v open --key vault.dat.pub
+expect_fail "--key に関係ないテキスト" "秘密鍵でも鍵の欠片でもない" v open --key a.txt
+expect_fail "--pubkey に秘密鍵" "は秘密鍵です" v add --pubkey s.key a.txt
+check      "エラーに秘密鍵の中身を出さない" sh -c "! grep -q AGE-SECRET-KEY '$LOG'"
+expect_fail "--pubkey に欠片" "鍵の欠片です" v add --pubkey k/vault-secret.share1-of-3.key a.txt
+expect_fail "--pubkey に .tlock" "タイムロック鍵です" v add --pubkey vault.dat.tlock a.txt
+expect_fail "split --key に公開鍵" "は公開鍵です" v split --key vault.dat.pub --shares 3 --threshold 2 --key-out sp/
+expect_fail "-V に普通のファイルで init" "カプセルではないようですが、上書きはしません" v init -V a.txt --size 64K --key-out z.key
+expect_fail "--key-out がコンテナと同じ" "出力先が重なっています" v init -V n.dat --size 64K --key-out n.dat
+expect_fail "--timelock-out と --key-out が同じ" "出力先が重なっています" v init -V n.dat --size 64K --timelock +1y --timelock-out kk.key --key-out kk.key
+check      "失敗した init は何も作らない" gone n.dat n.dat.pub z.key kk.key
+check      "取り違えの間もコンテナは無傷" test "$(filehash vault.dat)" = "$HV" -a "$(filehash s.dat)" = "$HS"
+
+mkdir lk && (cd lk && v init --size 256K --key-out k.key && echo a > a.txt && v add a.txt && ln -s vault.dat link.dat && ln -s vault.dat.pub link.dat.pub)
+expect_ok  "シンボリックリンク経由で開封 + 破壊" sh -c "cd lk && echo y | '$VAULT' open -V link.dat --key k.key --out o --and-destroy-key >'$LOG' 2>&1"
+check      "リンク先の本体まで消える (空ファイルを残さない)" gone lk/vault.dat lk/link.dat lk/k.key
+
+if [ "$(id -u)" = 0 ]; then
+  echo "  (root で実行中のため権限のテストはスキップ)"
+else
+  mkp() { mkdir -p "$1" && (cd "$1" && "$VAULT" init --size 256K --key-out k.key >/dev/null && echo hi > a.txt && "$VAULT" add a.txt >/dev/null); }
+  mkp p1; chmod 444 p1/vault.dat; H1=$(filehash p1/vault.dat)
+  expect_fail "読み取り専用のコンテナに add" "アクセスする権限がありません" v add -V p1/vault.dat p1/a.txt
+  expect_fail "読み取り専用のコンテナに comment add" "アクセスする権限がありません" v comment add -V p1/vault.dat x
+  check      "読み取り専用のコンテナは無傷" test "$(filehash p1/vault.dat)" = "$H1"
+  expect_ok  "読み取り専用のコンテナでも開封 (破棄なし) はできる" v open -V p1/vault.dat --key p1/k.key --out p1/o
+  mkp p2; chmod 000 p2/vault.dat
+  expect_fail "読めないコンテナで status" "アクセスする権限がありません" v status -V p2/vault.dat
+  chmod 600 p2/vault.dat
+  mkp p3; chmod 000 p3/k.key
+  expect_fail "読めない鍵で開封" "アクセスする権限がありません" v open -V p3/vault.dat --key p3/k.key --out p3/o
+  chmod 600 p3/k.key
+  mkp p4; mkdir p4/ro; chmod 555 p4/ro
+  expect_fail "書けない展開先に開封 + 破棄" "権限がありません" yes_v open -V p4/vault.dat --key p4/k.key --out p4/ro/o --and-destroy-key
+  check      "展開できなければ破棄しない" test -e p4/vault.dat -a -e p4/k.key
+  chmod 755 p4/ro
+  mkp p5; chmod 400 p5/k.key
+  expect_fail "書き込み禁止の鍵で開封 + 破棄" "何も破棄していません" yes_v open -V p5/vault.dat --key p5/k.key --out p5/o --and-destroy-key
+  check      "コンテナも鍵も残る (中途半端に消さない)" sh -c 'test -s p5/vault.dat -a -s p5/k.key'
+  check      "開封前に止まるので展開もしない" gone p5/o
+  mkp p6; mkdir p6/keys; mv p6/k.key p6/keys/; chmod 555 p6/keys
+  expect_fail "消せないフォルダにある鍵で開封 + 破棄" "何も破棄していません" yes_v open -V p6/vault.dat --key p6/keys/k.key --out p6/o --and-destroy-key
+  check      "鍵の中身も消えていない" test -s p6/keys/k.key -a -s p6/vault.dat
+  chmod 755 p6/keys
+  mkp p7; mv p7/k.key p7k.key; chmod 555 p7
+  expect_fail "書けないフォルダのコンテナを開封 + 破棄" "何も破棄していません" yes_v open -V p7/vault.dat --key p7k.key --out o7 --and-destroy-key
+  check      "コンテナも鍵も残る" test -s p7/vault.dat -a -s p7k.key
+  chmod 755 p7
+  mkdir p8; chmod 555 p8
+  expect_fail "書けないフォルダに init" "書き込み権限がありません" v init -V p8/v.dat --size 64K --key-out p8k/k.key
+  check      "途中のフォルダや鍵も作らない" gone p8k
+  chmod 755 p8
+  mkp p9; chmod 444 p9/k.key
+  expect_fail "書き込み禁止の鍵を split --delete-original" "何も破棄していません" yes_v split --key p9/k.key --shares 3 --threshold 2 --key-out p9/sp/ --delete-original
+  check      "欠片も作らず、元の鍵も残る" sh -c 'test ! -e p9/sp -a -s p9/k.key'
+  mkp pA; mkdir pA/rod; echo d > pA/rod/d.txt; chmod 555 pA/rod
+  expect_ok  "消せない場所のファイルを add --delete-original" v add -V pA/vault.dat --delete-original pA/rod/d.txt
+  check      "追加はされ、元ファイルは中身ごと残る (警告のみ)" sh -c "grep -q 元ファイルは消していません '$LOG' && test \"\$(cat pA/rod/d.txt)\" = d"
+  chmod 755 pA/rod
+fi
 
 # ---------------------------------------------------------------
 printf '\n\033[1m結果: %d OK / %d NG\033[0m\n' "$PASS" "$FAIL"

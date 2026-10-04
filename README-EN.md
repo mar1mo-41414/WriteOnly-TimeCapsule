@@ -122,6 +122,7 @@ The CLI messages are in Japanese.
 - The time lock relies on the external [drand](https://drand.love/) network. If drand no longer exists on that date, only the escape hatch can open the capsule — always keep one
 - Destroying only affects files on the machine where you open it, not copies or backups
 - If part of the capsule is corrupted, the intact files can still be recovered (a corrupted capsule is never destroyed)
+- If any file to be destroyed cannot be removed (read-only, no permission on its folder, ...), nothing is destroyed
 - There is intentionally no command to look inside (`list`, `peek`, ...)
 
 Technical details are in [docs/ARCHITECTURE-EN.md](docs/ARCHITECTURE-EN.md).
