@@ -275,6 +275,37 @@ expect_ok  "コメントなしの status" v status -V nc.dat
 check      "コメント行は出ない" sh -c "! grep -q コメント '$LOG'"
 check      "コメントなしのコンテナには目印も入らない" sh -c '! grep -q -a WOTCNOTE nc.dat'
 
+section "9. vault comment (後からコメントを追加・変更・消去)" comment-cmd
+v init --size 256K --key-out k.key; echo x > x.txt; v add x.txt
+expect_ok  "コメントなしで vault comment" v comment
+check      "「コメントはありません」" grep -q "コメントはありません" "$LOG"
+expect_fail "コメントなしで edit" "コメントがありません" v comment edit "あ"
+expect_ok  "comment add (後から付ける)" v comment add "最初のとても長いコメント。写真と寄せ書き"
+expect_ok  "status" v status
+check      "status に表示" grep -q "コメント: 最初のとても長いコメント。写真と寄せ書き" "$LOG"
+expect_fail "既にあるのに add" "既にコメントがあります" v comment add "二重"
+expect_ok  "comment edit (短く書き換え)" v comment edit "短い"
+check      "変更前と変更後を表示" sh -c "grep -q '変更前:   最初の' '$LOG' && grep -q 'コメント: 短い' '$LOG'"
+check      "書き換え前のコメントの残りがコンテナに無い" sh -c '! grep -q -a 寄せ書き vault.dat'
+expect_fail "空のコメントに edit" "空のコメントにはできません" v comment edit " "
+echo y > y.txt; v add y.txt
+expect_ok  "add した後の vault comment" v comment
+check      "コメントは残っている" grep -q "^短い$" "$LOG"
+expect_ok  "comment erase" v comment erase
+check      "消したコメントを控えとして表示" grep -q "短い" "$LOG"
+check      "消去後はコンテナに目印もコメントも無い" sh -c '! grep -q -a -e WOTCNOTE -e 短い vault.dat'
+expect_ok  "消去後の vault comment" v comment
+check      "「コメントはありません」" grep -q "コメントはありません" "$LOG"
+expect_ok  "コメントが無いのに erase (何もしない)" v comment erase
+expect_fail "長すぎるコメントを add" "コメントが長すぎます" v comment add "$(printf 'あ%.0s' $(seq 1 150))"
+mkdir moved && cp vault.dat moved/
+expect_fail "公開鍵が無い場所では書き換えない" "公開鍵が読めません" v comment add -V moved/vault.dat "x"
+head -c 4096 /dev/urandom > other.bin; cp vault.dat.pub other.bin.pub; HO=$(filehash other.bin)
+expect_fail "カプセルでないファイルには書かない" "コンテナが壊れているか" v comment add -V other.bin "x"
+check      "カプセルでないファイルは無傷" test "$(filehash other.bin)" = "$HO"
+expect_ok  "コメント操作の後も開封できる" v open --key k.key --out o
+check      "中身2件とも一致" sh -c 'cmp -s x.txt o/x.txt && cmp -s y.txt o/y.txt'
+
 # ---------------------------------------------------------------
 printf '\n\033[1m結果: %d OK / %d NG\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -401,3 +401,85 @@ func TestCommentLimits(t *testing.T) {
 		t.Errorf("失敗した init がファイルを残した: %v", ents)
 	}
 }
+
+func TestSetComment(t *testing.T) {
+	fx := newVault(t, 256<<10)
+	r, _ := LoadRecipient(fx.pub)
+	if err := Add(fx.container, r, writeFile(t, fx.dir, "x", []byte("中身"))); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (string, bool) {
+		t.Helper()
+		c, ok, err := ReadComment(fx.container)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, ok
+	}
+	raw := func() []byte {
+		b, _ := os.ReadFile(fx.container)
+		return b
+	}
+	before, _ := os.Stat(fx.container)
+
+	// 後から付ける
+	if err := SetComment(fx.container, r, "とても長い最初のコメント。写真と寄せ書き"); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := read(); !ok || c != "とても長い最初のコメント。写真と寄せ書き" {
+		t.Fatalf("add: %q", c)
+	}
+	// 短く書き換えたら、前のコメントの残りが平文で残らない
+	if err := SetComment(fx.container, r, "短い"); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := read(); c != "短い" {
+		t.Fatalf("edit: %q", c)
+	}
+	if bytes.Contains(raw(), []byte("寄せ書き")) {
+		t.Error("書き換え前のコメントの残りがコンテナに残っている")
+	}
+	// 追記しても消えない
+	if err := Add(fx.container, r, writeFile(t, fx.dir, "y", []byte("2"))); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := read(); c != "短い" {
+		t.Fatalf("add 後: %q", c)
+	}
+	// 消去したら目印ごと消え、コメントなしのコンテナと区別がつかない
+	if err := SetComment(fx.container, r, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := read(); ok {
+		t.Fatal("erase 後もコメントがある")
+	}
+	if b := raw(); bytes.Contains(b, []byte(noteMagic)) || bytes.Contains(b, []byte("短い")) {
+		t.Error("消去後も目印やコメントが残っている")
+	}
+	// mtime は変えない、中身はそのまま開ける
+	if after, _ := os.Stat(fx.container); !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Error("コメント操作でコンテナの mtime/サイズが変わった")
+	}
+	id, _ := LoadIdentity(fx.sec)
+	if opened, err := Open(fx.container, id, filepath.Join(fx.dir, "out")); err != nil || len(opened) != 2 {
+		t.Fatalf("opened=%d err=%v", len(opened), err)
+	}
+
+	// 別のカプセルの公開鍵や、カプセルでないファイルには書かない
+	other := newVault(t, MinSize)
+	ro, _ := LoadRecipient(other.pub)
+	if err := SetComment(fx.container, ro, "x"); !errors.Is(err, ErrMismatch) {
+		t.Errorf("別カプセルの公開鍵で書けてしまった: %v", err)
+	}
+	notVault := writeFile(t, fx.dir, "not-vault.bin", randBytes(4096))
+	orig, _ := os.ReadFile(notVault)
+	if err := SetComment(notVault, r, "x"); err == nil {
+		t.Error("カプセルでないファイルに書けてしまった")
+	}
+	if now, _ := os.ReadFile(notVault); !bytes.Equal(now, orig) {
+		t.Error("カプセルでないファイルが書き換えられた")
+	}
+	if err := SetComment(fx.container, r, strings.Repeat("あ", 200)); err == nil {
+		t.Error("長すぎるコメントを受け付けた")
+	}
+}

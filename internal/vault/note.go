@@ -14,6 +14,7 @@ package vault
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"filippo.io/age"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -53,18 +55,53 @@ func NormalizeComment(s string) (string, error) {
 	return s, nil
 }
 
-// writeComment はコンテナのメモ領域にコメントを書く。
+// writeComment はコンテナのメモ領域にコメントを書く。comment が空なら消去する。
+// 以前のコメントの残りが平文で残らないよう、毎回メモ領域全体を乱数で埋め直してから書く。
+// 消去後はコメントを一度も付けなかったコンテナと見分けがつかない。
 func writeComment(f *os.File, comment string) error {
-	b := make([]byte, noteHeader, noteHeader+len(comment))
-	copy(b, noteMagic)
-	b[len(noteMagic)] = noteVersion
-	binary.BigEndian.PutUint16(b[len(noteMagic)+1:], uint16(len(comment)))
-	binary.BigEndian.PutUint32(b[len(noteMagic)+3:], crc32.ChecksumIEEE([]byte(comment)))
-	b = append(b, comment...)
+	b := make([]byte, superblockSize-noteOffset)
+	if _, err := rand.Read(b); err != nil {
+		return err
+	}
+	if comment != "" {
+		copy(b, noteMagic)
+		b[len(noteMagic)] = noteVersion
+		binary.BigEndian.PutUint16(b[len(noteMagic)+1:], uint16(len(comment)))
+		binary.BigEndian.PutUint32(b[len(noteMagic)+3:], crc32.ChecksumIEEE([]byte(comment)))
+		copy(b[noteHeader:], comment)
+	} else if bytes.HasPrefix(b, []byte(noteMagic)) {
+		b[0] ^= 0xff // 乱数が偶然目印と一致したとき用 (事実上起きない)
+	}
 	if _, err := f.WriteAt(b, noteOffset); err != nil {
 		return err
 	}
 	return f.Sync()
+}
+
+// SetComment は既存のカプセルのコメントを書き換える (comment が空なら消去)。
+// 別のファイルを壊さないよう、公開鍵でカプセル本体であることを確かめてから書く。
+func SetComment(containerPath string, r *age.X25519Recipient, comment string) error {
+	comment, err := NormalizeComment(comment)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(containerPath, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := lockFile(f, true); err != nil {
+		return err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	defer os.Chtimes(containerPath, st.ModTime(), st.ModTime())
+	if _, err := readSuperblock(f, r.String()); err != nil {
+		return err
+	}
+	return writeComment(f, comment)
 }
 
 // ReadComment はコンテナに埋め込まれたコメントを読む。鍵は不要。

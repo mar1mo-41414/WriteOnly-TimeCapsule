@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/spf13/cobra"
 
 	"github.com/mar1mo-41414/WriteOnly-TimeCapsule/internal/vault"
@@ -41,7 +42,7 @@ func main() {
 	}
 	root.PersistentFlags().StringVarP(&containerPath, "vault", "V", def, "コンテナファイル (環境変数 VAULT_PATH でも指定可)")
 	root.PersistentFlags().StringVar(&pubPath, "pubkey", "", "公開鍵ファイル (既定: <コンテナ>.pub)")
-	root.AddCommand(initCmd(), addCmd(), statusCmd(), openCmd(), splitCmd(), timelockCmd())
+	root.AddCommand(initCmd(), addCmd(), statusCmd(), openCmd(), splitCmd(), timelockCmd(), commentCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "エラー:", err)
@@ -471,6 +472,119 @@ func splitCmd() *cobra.Command {
 	c.MarkFlagRequired("key")
 	c.MarkFlagRequired("shares")
 	c.MarkFlagRequired("threshold")
+	return c
+}
+
+func commentCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "comment",
+		Short: "カプセルのコメント (平文のメモ) を表示・追加・変更・消去する",
+		Long: "カプセルのコメント (平文のメモ) を表示・追加・変更・消去する。\n" +
+			"サブコマンドなしで実行すると今のコメントを表示する。コメントはコンテナ自身に暗号化せずに埋め込まれる。",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireContainer(); err != nil {
+				return err
+			}
+			comment, ok, err := vault.ReadComment(containerPath)
+			switch {
+			case err != nil:
+				return err
+			case !ok:
+				fmt.Println("コメントはありません (追加は vault comment add \"...\")")
+			default:
+				fmt.Println(comment)
+			}
+			return nil
+		},
+	}
+
+	// loadForComment は存在確認・公開鍵・今のコメントをまとめて取る。
+	loadForComment := func() (*age.X25519Recipient, string, bool, error) {
+		if err := requireContainer(); err != nil {
+			return nil, "", false, err
+		}
+		r, err := vault.LoadRecipient(pubkeyPath())
+		if err != nil {
+			return nil, "", false, fmt.Errorf("公開鍵が読めません (コメントを書き換えるには、カプセル本体かどうかの確認に公開鍵が必要です): %w", err)
+		}
+		cur, ok, err := vault.ReadComment(containerPath)
+		if err != nil {
+			// 壊れているコメントは edit / erase で上書きできるよう、「ある」扱いにする
+			return r, "(壊れているコメント)", true, nil
+		}
+		return r, cur, ok, nil
+	}
+
+	add := &cobra.Command{
+		Use:   "add <コメント>",
+		Short: "コメントの無いカプセルにコメントを付ける",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, _, ok, err := loadForComment()
+			if err != nil {
+				return err
+			}
+			if ok {
+				return errors.New("既にコメントがあります (書き換えは vault comment edit \"...\"、消去は vault comment erase)")
+			}
+			text := strings.Join(args, " ")
+			if err := vault.SetComment(containerPath, r, text); err != nil {
+				return err
+			}
+			text, _ = vault.NormalizeComment(text)
+			printComment(text)
+			fmt.Println("コメントを付けました (コンテナに平文で埋め込み。鍵が無くても誰でも読めます)")
+			return nil
+		},
+	}
+	editC := &cobra.Command{
+		Use:   "edit <コメント>",
+		Short: "今のコメントを書き換える",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r, cur, ok, err := loadForComment()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return errors.New("コメントがありません (追加は vault comment add \"...\")")
+			}
+			text := strings.Join(args, " ")
+			if strings.TrimSpace(text) == "" {
+				return errors.New("空のコメントにはできません (消すときは vault comment erase)")
+			}
+			if err := vault.SetComment(containerPath, r, text); err != nil {
+				return err
+			}
+			text, _ = vault.NormalizeComment(text)
+			fmt.Printf("変更前:   %s\n", strings.ReplaceAll(cur, "\n", "\n          "))
+			printComment(text)
+			fmt.Println("コメントを書き換えました")
+			return nil
+		},
+	}
+	erase := &cobra.Command{
+		Use:   "erase",
+		Short: "コメントを消去する",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			r, cur, ok, err := loadForComment()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Println("コメントはありません (何もしていません)")
+				return nil
+			}
+			if err := vault.SetComment(containerPath, r, ""); err != nil {
+				return err
+			}
+			fmt.Printf("コメントを消去しました。消したコメント (控え):\n  %s\n", strings.ReplaceAll(cur, "\n", "\n  "))
+			return nil
+		},
+	}
+	c.AddCommand(add, editC, erase)
 	return c
 }
 

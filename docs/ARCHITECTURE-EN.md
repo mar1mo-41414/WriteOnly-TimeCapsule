@@ -17,6 +17,7 @@
 - **Mask layer**: the whole data area is XORed with an XChaCha20 keystream whose key is derived (HKDF) from the public key and a per-container salt, so age's text headers (`age-encryption.org/v1`, …) and record boundaries are indistinguishable from the random free space
 - **Write offset**: sealed in the superblock with XChaCha20-Poly1305; there is no plaintext header. Appending rewrites only the first 72 bytes
 - **Comment**: `init --comment` stores the note in plaintext from byte 72 of the superblock as `"WOTCNOTE" | version(1) | length(2) | CRC32(4) | text` (max 425 bytes), readable without any key. Without a comment the area stays random, so a false match of magic + CRC is practically impossible (this also covers capsules made by older versions). Running `add` with v1.0.3 or older overwrites the area with random bytes and erases the comment
+- **Changing / removing the comment** (`vault comment add/edit/erase`): the whole comment area [72, 512) is refilled with random bytes before each write, so no remnant of an older, longer comment survives; after erasing, the container is indistinguishable from one that never had a comment. The public key must decrypt the superblock first (so other files are never overwritten), an exclusive lock is held, and the mtime is preserved
 - **Opening**: derive the public key from the secret key → unmask → age-decrypt each record → extract. Directory components are stripped from file names (path traversal), duplicates become `name (1).ext`
 - **No space**: `add` only says "容量不足" (no space). A partially written record never advances the offset, so existing records stay intact
 - **Concurrency**: `add` takes an exclusive `flock` on the container and `open` a shared one, so simultaneous `add`s queue up instead of overwriting each other
@@ -69,5 +70,5 @@ That signature is created only at that time by a threshold of the operators, so 
 
 ```bash
 make test                              # unit tests (includes live drand access; VAULT_OFFLINE=1 skips it)
-make build && scripts/e2e.sh ./vault   # end-to-end CLI test (153 checks, ~1 min, needs drand)
+make build && scripts/e2e.sh ./vault   # end-to-end CLI test (178 checks, ~1 min, needs drand)
 ```

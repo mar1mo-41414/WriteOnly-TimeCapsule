@@ -65,7 +65,16 @@ vault status    # → shows the comment
 ```
 
 The comment is embedded in the container (`vault.dat`) itself, so it travels with the container and can be read with `vault status` without any key.
-It is **not encrypted** — anyone can read it, so don't put secrets in it. Up to 425 bytes (newlines allowed); can only be set at `init`.
+It is **not encrypted** — anyone can read it, so don't put secrets in it. Up to 425 bytes (newlines allowed).
+
+You can also add, change or remove it later (the public key `vault.dat.pub` must be next to the capsule):
+
+```bash
+vault comment                              # show the current comment
+vault comment add "Graduation 2027"        # add to a capsule without one
+vault comment edit "Graduation 2027 (photos)"
+vault comment erase                        # remove (the removed text is printed once)
+```
 
 ### Split the key ("any 2 of 3")
 
