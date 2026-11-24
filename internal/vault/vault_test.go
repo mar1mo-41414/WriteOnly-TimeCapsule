@@ -421,6 +421,42 @@ func TestOpenRejectsSizeMismatch(t *testing.T) {
 	}
 }
 
+// Add と Open / SetComment が同時に走っても壊れないこと (M8)。
+// ロックで直列化されるため、全ての操作が成功し、最終状態が一致するはず。
+func TestConcurrentAddOpenComment(t *testing.T) {
+	fx := newVault(t, 4<<20)
+	r, _ := LoadRecipient(fx.pub)
+	id, _ := LoadIdentity(fx.sec)
+	src := t.TempDir()
+	const n = 10
+	errs := make(chan error, n+10)
+	for i := range n {
+		p := writeFile(t, src, "c"+strconv.Itoa(i), randBytes(5000+i))
+		go func() { errs <- Add(fx.container, r, p) }()
+	}
+	for i := range 5 {
+		out := filepath.Join(fx.dir, "conc-out-"+strconv.Itoa(i))
+		go func() {
+			// ロックで直列化されるため、途中状態を読んで壊れることはないはず
+			_, err := Open(fx.container, id, out)
+			errs <- err
+		}()
+		go func(i int) { errs <- SetComment(fx.container, r, "競合テスト "+strconv.Itoa(i)) }(i)
+	}
+	for range n + 10 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	opened, err := Open(fx.container, id, filepath.Join(fx.dir, "final"))
+	if err != nil || len(opened) != n {
+		t.Fatalf("opened=%d err=%v (競合でデータが壊れた)", len(opened), err)
+	}
+	if _, ok, err := ReadComment(fx.container); err != nil || !ok {
+		t.Fatalf("comment: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestComment(t *testing.T) {
 	d := t.TempDir()
 	o := InitOptions{
