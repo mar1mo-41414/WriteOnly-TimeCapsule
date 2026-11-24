@@ -149,10 +149,18 @@ func CombineShares(shares []*Share) (*age.X25519Identity, error) {
 	seenCoord := map[byte][]byte{}
 	var parts [][]byte
 	for _, s := range shares {
+		if s.Fingerprint != first.Fingerprint {
+			return nil, errors.New("別のカプセルの鍵の欠片が混ざっています")
+		}
+		if s.SetID != first.SetID || s.Threshold != first.Threshold || s.Total != first.Total {
+			return nil, errors.New("別の回に分割した鍵の欠片が混ざっています (同じカプセルでも、分割し直すと以前の欠片とは組み合わせられません)")
+		}
 		// 復元はヘッダ Index ではなく本体末尾の座標 (x) で行われる。座標の
 		// 重複した part を shamir.Combine に渡すと補間でゼロ除算パニックに
-		// なるため、ここで座標の一意性を担保する。番号だけ付け替えた同一
-		// 欠片は重複として読み飛ばし、同じ座標で中身が違うものは拒否する。
+		// なるため、同一カプセル・同一分割の欠片どうしで座標の一意性を
+		// 担保する (別カプセル・別分割の欠片は座標が偶然同じでも上で弾かれて
+		// いるので、ここでの衝突は細工された欠片を意味する)。番号だけ
+		// 付け替えた同一欠片は重複として読み飛ばす。
 		if len(s.Data) == 0 || s.Data[len(s.Data)-1] == 0 {
 			return nil, errors.New("鍵の欠片の形式が不正です (本体の座標が不正です)")
 		}
@@ -164,12 +172,6 @@ func CombineShares(shares []*Share) (*age.X25519Identity, error) {
 			return nil, errors.New("鍵の欠片の本体の座標が重複しています (細工された欠片が混ざっている可能性があります)")
 		}
 		seenCoord[coord] = s.Data
-		if s.Fingerprint != first.Fingerprint {
-			return nil, errors.New("別のカプセルの鍵の欠片が混ざっています")
-		}
-		if s.SetID != first.SetID || s.Threshold != first.Threshold || s.Total != first.Total {
-			return nil, errors.New("別の回に分割した鍵の欠片が混ざっています (同じカプセルでも、分割し直すと以前の欠片とは組み合わせられません)")
-		}
 		if seen[s.Index] {
 			continue // 同じ欠片が重複して渡されただけなら無視する
 		}
