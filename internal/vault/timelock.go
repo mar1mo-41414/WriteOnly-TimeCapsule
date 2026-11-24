@@ -20,7 +20,6 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -109,9 +108,19 @@ func (n *quicknet) Current(t time.Time) uint64 {
 
 // Signature は指定ラウンドの署名を drand から取得する。
 // tlock はここでのエラーを全部「早すぎる」と扱うので、本当の理由を lastErr に残す。
+//
+// 1つのミラーが 4xx を返しても即断せず、全ミラーを試す (故障した/古い
+// ミラー1つの応答で「まだ開封できません」と誤判定しないため)。全ミラーを
+// 試したうえで、どこかが 4xx を返していれば「そのラウンドはまだ無い」
+// (= ErrTooEarly) と確定する。
 func (n *quicknet) Signature(round uint64) ([]byte, error) {
 	n.lastErr = nil
+	if len(n.hosts) == 0 {
+		n.lastErr = fmt.Errorf("%w (問い合わせ先の drand ミラーが設定されていません)", ErrDrandUnreachable)
+		return nil, n.lastErr
+	}
 	var errs []error
+	tooEarly := false
 	for _, h := range n.hosts {
 		sig, status, err := n.fetch(h, round)
 		if err == nil {
@@ -119,10 +128,13 @@ func (n *quicknet) Signature(round uint64) ([]byte, error) {
 		}
 		// 未来のラウンドはミラーが 404/425 などを返す
 		if status >= 400 && status < 500 {
-			n.lastErr = ErrTooEarly
-			return nil, n.lastErr
+			tooEarly = true
 		}
 		errs = append(errs, err)
+	}
+	if tooEarly {
+		n.lastErr = ErrTooEarly
+		return nil, n.lastErr
 	}
 	// 全ミラーの生エラーを並べると読みにくいので、代表として最初の1件だけ添える。
 	n.lastErr = fmt.Errorf("%w (ミラー %d か所すべて失敗。インターネット接続を確認してください。例: %v)", ErrDrandUnreachable, len(n.hosts), errs[0])
@@ -327,8 +339,10 @@ func ParseUnlockTime(s string, now time.Time) (time.Time, error) {
 }
 
 // ReadTimelockInfo はタイムロック鍵ファイルの開封可能日時を返す (オフライン)。
+// 他の鍵ファイルと同じ readKeyFile 経由で読み、サイズ上限と通常ファイル
+// 確認を適用する (巨大なファイルを丸ごと読み込まない)。
 func ReadTimelockInfo(path string) (time.Time, error) {
-	b, err := os.ReadFile(path)
+	b, err := readKeyFile(path, "タイムロック鍵は <コンテナ>.tlock です")
 	if err != nil {
 		return time.Time{}, err
 	}

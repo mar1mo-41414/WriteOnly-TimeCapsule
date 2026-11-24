@@ -1,7 +1,11 @@
 package vault
 
 import (
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,6 +78,68 @@ func TestTimelockTooEarlyOffline(t *testing.T) {
 	var te *TooEarlyError
 	if _, err := UnlockTimelock(b); !errors.As(err, &te) || !errors.Is(err, ErrTooEarly) {
 		t.Fatalf("want TooEarly, got %v", err)
+	}
+}
+
+// 署名取得の失敗系 (M2): 1つのミラーの 4xx で即断せず全ミラーを試すこと、
+// ミラー未設定でもパニックしないこと。
+func TestSignatureTriesAllMirrors(t *testing.T) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer notFound.Close()
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+	want := []byte{0xde, 0xad, 0xbe, 0xef}
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"round":123,"signature":%q}`, hex.EncodeToString(want))
+	}))
+	defer good.Close()
+
+	// 最初のミラーが 404 でも、次のミラーで取れれば成功
+	n := &quicknet{hosts: []string{notFound.URL, good.URL}, client: client}
+	sig, err := n.Signature(123)
+	if err != nil || hex.EncodeToString(sig) != hex.EncodeToString(want) {
+		t.Fatalf("sig=%x err=%v", sig, err)
+	}
+	// 全ミラーが 4xx なら ErrTooEarly
+	n = &quicknet{hosts: []string{notFound.URL, notFound.URL}, client: client}
+	if _, err := n.Signature(123); !errors.Is(err, ErrTooEarly) {
+		t.Fatalf("want ErrTooEarly, got %v", err)
+	}
+	// 4xx 以外の失敗だけなら ErrDrandUnreachable
+	n = &quicknet{hosts: []string{broken.URL}, client: client}
+	if _, err := n.Signature(123); !errors.Is(err, ErrDrandUnreachable) {
+		t.Fatalf("want ErrDrandUnreachable, got %v", err)
+	}
+	// ミラー未設定でもパニックせず ErrDrandUnreachable
+	n = &quicknet{client: client}
+	if _, err := n.Signature(123); !errors.Is(err, ErrDrandUnreachable) {
+		t.Fatalf("empty hosts: got %v", err)
+	}
+}
+
+// ReadTimelockInfo は鍵ファイルと同じサイズ上限で読むこと (M3)。
+func TestReadTimelockInfoSizeLimit(t *testing.T) {
+	d := t.TempDir()
+	big := filepath.Join(d, "big.tlock")
+	if err := os.WriteFile(big, make([]byte, MaxKeyFileSize+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadTimelockInfo(big); err == nil || !strings.Contains(err.Error(), "大きすぎます") {
+		t.Fatalf("巨大な .tlock を拒否できない: %v", err)
+	}
+	// 正常なタイムロック鍵は従来どおり読める
+	id, _ := age.GenerateX25519Identity()
+	p := filepath.Join(d, "vault.dat.tlock")
+	if err := WriteTimelock(p, id, time.Now().AddDate(1, 0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadTimelockInfo(p); err != nil {
+		t.Fatalf("正常な .tlock が読めない: %v", err)
 	}
 }
 
