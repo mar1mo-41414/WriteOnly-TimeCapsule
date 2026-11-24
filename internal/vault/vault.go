@@ -164,6 +164,9 @@ func Verify(containerPath string, r *age.X25519Recipient) error {
 		return err
 	}
 	defer f.Close()
+	if err := lockFile(f, false); err != nil {
+		return err
+	}
 	_, err = readSuperblock(f, r.String())
 	return err
 }

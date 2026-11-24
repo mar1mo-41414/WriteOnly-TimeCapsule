@@ -355,6 +355,9 @@ func timelockCmd() *cobra.Command {
 		Short: "既存のカプセルに、指定日時まで開封できないタイムロック鍵を追加する",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := requireContainer(); err != nil {
+				return err
+			}
 			unlock, err := vault.ParseUnlockTime(unlockStr, time.Now())
 			if err != nil {
 				return err
@@ -363,7 +366,13 @@ func timelockCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if r, err := vault.LoadRecipient(pubkeyPath()); err == nil && r.String() != id.Recipient().String() {
+			// 公開鍵が読めない場合は、対象カプセルの確認ができないので止める
+			// (無関係な鍵に対する .tlock を作ってしまう取り違え防止)。
+			r, err := vault.LoadRecipient(pubkeyPath())
+			if err != nil {
+				return fmt.Errorf("公開鍵が読めません (タイムロックを追加するには、カプセル本体かどうかの確認に公開鍵が必要です): %w", err)
+			}
+			if r.String() != id.Recipient().String() {
 				return errors.New("鍵がこのコンテナの公開鍵と一致しません")
 			}
 			out = resolveTimelockOut(out)
@@ -787,6 +796,9 @@ func parseSize(s string) (int64, error) {
 	v, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || v <= 0 {
 		return 0, fmt.Errorf("サイズの形式が不正です: %q", s)
+	}
+	if mult > 1 && v > (1<<63-1)/mult {
+		return 0, fmt.Errorf("サイズが大きすぎます: %q", s)
 	}
 	return v * mult, nil
 }

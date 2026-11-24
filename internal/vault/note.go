@@ -112,6 +112,9 @@ func ReadComment(containerPath string) (comment string, ok bool, err error) {
 		return "", false, err
 	}
 	defer f.Close()
+	if err := lockFile(f, false); err != nil {
+		return "", false, err
+	}
 	buf := make([]byte, superblockSize-noteOffset)
 	if _, err := f.ReadAt(buf, noteOffset); err != nil {
 		return "", false, nil // 小さすぎるファイルなどはコメントなし扱い
