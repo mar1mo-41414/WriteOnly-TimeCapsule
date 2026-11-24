@@ -170,7 +170,29 @@ func Verify(containerPath string, r *age.X25519Recipient) error {
 
 // Add は srcPath のファイルを暗号化してコンテナに追記する。
 // コンテナのサイズ・更新日時は変化させない。
+//
+// 対象は通常ファイルのみ。開く前に Lstat で種別を確認する (FIFO 等を先に
+// os.Open すると、書き手が現れるまで無限にブロックしてしまうため)。
+// シンボリックリンクは従来どおりリンク先を対象とし、リンク先の種別を
+// Stat で確認してから開く。
 func Add(containerPath string, r *age.X25519Recipient, srcPath string) error {
+	lst, err := os.Lstat(srcPath)
+	if err != nil {
+		return err
+	}
+	if lst.Mode()&os.ModeSymlink != 0 {
+		// リンク先が通常ファイルでなければ開く前に拒否する
+		tst, err := os.Stat(srcPath)
+		if err != nil {
+			return err
+		}
+		if !tst.Mode().IsRegular() {
+			return errors.New("通常ファイルのみ追加できます (ディレクトリ等は不可)")
+		}
+	} else if !lst.Mode().IsRegular() {
+		return errors.New("通常ファイルのみ追加できます (ディレクトリ等は不可)")
+	}
+
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -288,6 +310,11 @@ func Open(containerPath string, id *age.X25519Identity, outDir string) ([]Opened
 	if err != nil {
 		return nil, err
 	}
+	// 既存の展開先は MkdirAll では権限が引き締められない。平文を置く場所なので、
+	// 他の利用者からも見える権限なら警告する (権限自体は利用者の指定を尊重し変えない)。
+	if st, err := os.Stat(outDir); err == nil && st.IsDir() && st.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(os.Stderr, "警告: 展開先 %s の権限が %04o で、グループ/他の利用者からも展開した平文が見える可能性があります\n", outDir, st.Mode().Perm())
+	}
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -370,10 +397,18 @@ func openRecord(f *os.File, sb *superblock, id *age.X25519Identity, start, end i
 	if err != nil {
 		return Opened{}, err
 	}
-	if _, err := io.Copy(dst, br); err != nil {
+	n, err := io.Copy(dst, br)
+	if err != nil {
 		dst.Close()
 		os.Remove(path)
 		return Opened{}, err
+	}
+	// メタデータの申告サイズと実際に展開できたバイト数が食い違うレコードは
+	// 壊れているものとして扱う (中途半端な平文を残さない)。
+	if n != meta.Size {
+		dst.Close()
+		os.Remove(path)
+		return Opened{}, fmt.Errorf("レコードのサイズがメタデータと一致しません (%d バイト申告、%d バイト展開)", meta.Size, n)
 	}
 	if err := dst.Close(); err != nil {
 		return Opened{}, err

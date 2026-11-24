@@ -3,13 +3,19 @@ package vault
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"filippo.io/age"
 )
 
 type fixture struct {
@@ -308,6 +314,110 @@ func TestAddRejectsNonRegular(t *testing.T) {
 	}
 	if err := Add(fx.container, r, filepath.Join(fx.dir, "nothing")); err == nil {
 		t.Error("存在しないファイルを追加できてしまった")
+	}
+}
+
+// FIFO は開く前に拒否すること (開いてから判定すると書き手待ちでブロックする) (M1)。
+// シンボリックリンク経由の通常ファイルは従来どおり追加できること。
+func TestAddRejectsFIFO(t *testing.T) {
+	fx := newVault(t, MinSize)
+	r, _ := LoadRecipient(fx.pub)
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- Add(fx.container, r, fifo) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("FIFO を追加できてしまった")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FIFO の追加でブロックした")
+	}
+	target := writeFile(t, t.TempDir(), "real.txt", []byte("via link"))
+	link := filepath.Join(t.TempDir(), "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := Add(fx.container, r, link); err != nil {
+		t.Errorf("リンク経由の通常ファイルが追加できない: %v", err)
+	}
+}
+
+// writeRawRecord は Add と同じ手順で、任意のメタデータを持つレコードを直接書く (テスト用)。
+func writeRawRecord(t *testing.T, fx fixture, meta Meta, body []byte) {
+	t.Helper()
+	r, err := LoadRecipient(fx.pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(fx.container, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := lockFile(f, true); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := readSuperblock(f, r.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := f.Stat()
+	pos := superblockSize + sb.used
+	mw, err := newMaskedWriter(f, &sb.keys, pos+lenPrefixSize, st.Size())
+	if err != nil {
+		t.Fatal(err)
+	}
+	aw, err := age.Encrypt(mw, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mj, _ := json.Marshal(meta)
+	var lb [4]byte
+	binary.BigEndian.PutUint32(lb[:], uint32(len(mj)))
+	if _, err := io.Copy(aw, io.MultiReader(bytes.NewReader(lb[:]), bytes.NewReader(mj), bytes.NewReader(body))); err != nil {
+		t.Fatal(err)
+	}
+	if err := aw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	pw, err := newMaskedWriter(f, &sb.keys, pos, pos+lenPrefixSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plen [lenPrefixSize]byte
+	binary.BigEndian.PutUint64(plen[:], uint64(mw.n))
+	if _, err := pw.Write(plen[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	sb.used += lenPrefixSize + mw.n
+	if err := writeSuperblock(f, sb); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// メタデータの申告サイズと実バイト数が食い違うレコードは壊れたものとして扱うこと (M1/L7)。
+func TestOpenRejectsSizeMismatch(t *testing.T) {
+	fx := newVault(t, MinSize)
+	writeRawRecord(t, fx, Meta{Name: "lie.txt", Size: 999, Mode: 0o644, AddedAt: time.Now()}, []byte("hi"))
+	id, _ := LoadIdentity(fx.sec)
+	out := filepath.Join(fx.dir, "out")
+	opened, err := Open(fx.container, id, out)
+	var ce *CorruptError
+	if !errors.As(err, &ce) || len(ce.Broken) != 1 {
+		t.Fatalf("err = %v", err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("opened = %v", opened)
+	}
+	if _, err := os.Stat(filepath.Join(out, "lie.txt")); !os.IsNotExist(err) {
+		t.Error("サイズ不一致の平文が残っている")
 	}
 }
 
