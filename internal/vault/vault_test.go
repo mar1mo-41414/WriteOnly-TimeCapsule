@@ -267,15 +267,24 @@ func TestCorruptRecordSalvage(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 
-	// スーパーブロックが壊れると鍵の不一致と区別できない (どちらも ErrMismatch)
+	// スーパーブロック (A面) が壊れても、末尾のバックアップ (B面) から
+	// 復旧して開封・追記できる (H2 で変更された挙動。以前は ErrMismatch だった)
 	sb := filepath.Join(fx.dir, "sb.dat")
 	copyFile(t, fx.container, sb)
 	corruptAt(t, sb, 50)
-	if _, err := Open(sb, id, filepath.Join(fx.dir, "o3")); !errors.Is(err, ErrMismatch) {
-		t.Fatalf("err = %v", err)
+	opened, err = Open(sb, id, filepath.Join(fx.dir, "o3"))
+	if err != nil || len(opened) != 3 {
+		t.Fatalf("B面から復旧できない: opened=%d err=%v", len(opened), err)
 	}
-	if err := Add(sb, r, writeFile(t, src, "x", []byte("x"))); !errors.Is(err, ErrMismatch) {
-		t.Fatalf("壊れたスーパーブロックに追記できてしまった: %v", err)
+	if err := Add(sb, r, writeFile(t, src, "x", []byte("x"))); err != nil {
+		t.Fatalf("復旧したコンテナに追記できない: %v", err)
+	}
+	// A面・B面の両方が壊れると鍵の不一致と区別できない (どちらも ErrMismatch)
+	st, _ := os.Stat(sb)
+	corruptAt(t, sb, 50)
+	corruptAt(t, sb, st.Size()-50)
+	if _, err := Open(sb, id, filepath.Join(fx.dir, "o4")); !errors.Is(err, ErrMismatch) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

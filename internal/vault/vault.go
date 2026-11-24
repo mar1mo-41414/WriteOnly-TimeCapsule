@@ -112,7 +112,11 @@ func Init(o InitOptions) (recipient string, keyFiles []string, err error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if err = writeSuperblock(f, &superblock{salt: salt, keys: k, used: 0}); err != nil {
+	sbv := &superblock{salt: salt, keys: k, used: 0}
+	if err = writeSuperblock(f, sbv); err != nil {
+		return "", nil, err
+	}
+	if err = writeSuperblockBackup(f, sbv); err != nil {
 		return "", nil, err
 	}
 	if o.Comment != "" {
@@ -229,7 +233,9 @@ func Add(containerPath string, r *age.X25519Recipient, srcPath string) error {
 		return err
 	}
 	pos := superblockSize + sb.used
-	end := cst.Size()
+	// 末尾72バイトはスーパーブロックのバックアップ (B面) の予約領域として
+	// レコードを書かない (有効容量が72バイト減る)。
+	end := cst.Size() - backupSize
 	if pos+lenPrefixSize > end {
 		return ErrNoSpace
 	}
@@ -282,7 +288,18 @@ func Add(containerPath string, r *age.X25519Recipient, srcPath string) error {
 		return err
 	}
 	sb.used += lenPrefixSize + mw.n
-	return writeSuperblock(f, sb)
+	// 書込み順: データ本体 → Sync → A面 → Sync → B面 → Sync。
+	// A面の書込み中に落ちたら B面の旧 used で復旧でき (この Add は無かった
+	// ことになり既存レコードは無事)、B面の書込み中に落ちたら A面が正で
+	// B面は無視される。B面の更新失敗自体は Add の失敗にしない (本体は
+	// A面で安全なため) が、警告は出す。
+	if err := writeSuperblock(f, sb); err != nil {
+		return err
+	}
+	if err := writeSuperblockBackup(f, sb); err != nil {
+		fmt.Fprintf(os.Stderr, "警告: スーパーブロックのバックアップを更新できませんでした: %v\n", err)
+	}
+	return nil
 }
 
 func detectMIME(name string, head []byte) string {

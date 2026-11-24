@@ -78,14 +78,27 @@ type superblock struct {
 	used int64 // データ領域の使用バイト数
 }
 
-func writeSuperblock(f *os.File, sb *superblock) error {
+// backupSize はスーパーブロックのバックアップ (B面) の大きさ。
+// B面は A面 (先頭 [0,72)) と同じ構造の独立した複写で、コンテナ末尾
+// [size-72, size) に置く。コメント領域 ([72,512)) とは重ならず、
+// コンテナ単体で持ち運ぶ設計も壊さない。A面は従来の v1 形式のままなので、
+// B面を知らない旧バージョンでも A面から開ける (旧バージョンの Add は
+// B面を更新しないが、読み取りは常に A面優先なので誤復旧はしない)。
+const backupSize = noteOffset
+
+// errBackupNoSpace はデータ領域が末尾まで埋まっていて B面を置けないときに返す。
+var errBackupNoSpace = errors.New("データ領域に空きがなく、スーパーブロックのバックアップを置けません")
+
+// sealSuperblock はスーパーブロックの封印済みブロック (72バイト) を作る。
+// 呼ぶたびに nonce は乱数で新しくする (A面・B面は独立した封印になる)。
+func sealSuperblock(sb *superblock) ([]byte, error) {
 	aead, err := chacha20poly1305.NewX(sb.keys.state[:])
 	if err != nil {
-		return err
+		return nil, err
 	}
-	buf := make([]byte, superblockSize)
+	buf := make([]byte, noteOffset)
 	if _, err := rand.Read(buf); err != nil {
-		return err
+		return nil, err
 	}
 	copy(buf, sb.salt)
 	nonce := buf[saltSize : saltSize+chacha20poly1305.NonceSizeX]
@@ -95,16 +108,82 @@ func writeSuperblock(f *os.File, sb *superblock) error {
 	binary.BigEndian.PutUint64(plain[8:], uint64(sb.used))
 	sealed := aead.Seal(nil, nonce, plain, sb.salt)
 	copy(buf[saltSize+len(nonce):], sealed)
+	return buf, nil
+}
+
+func writeSuperblock(f *os.File, sb *superblock) error {
+	buf, err := sealSuperblock(sb)
+	if err != nil {
+		return err
+	}
 	// 書き換えるのは管理情報の部分だけ。その後ろ (コメント領域・乱数) は init 時のまま残す。
-	if _, err := f.WriteAt(buf[:noteOffset], 0); err != nil {
+	if _, err := f.WriteAt(buf, 0); err != nil {
 		return err
 	}
 	return f.Sync()
 }
 
+// backupOffset は B面の置き場所 (ファイル末尾) を返す。
+func backupOffset(f *os.File) (int64, error) {
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	off := st.Size() - backupSize
+	if off < superblockSize {
+		return 0, errBackupNoSpace
+	}
+	return off, nil
+}
+
+// writeSuperblockBackup は B面をコンテナ末尾に書く。
+// データ領域の末尾72バイト以内にレコードがある場合は、そのレコードを
+// 壊さないよう書かずに errBackupNoSpace を返す。
+func writeSuperblockBackup(f *os.File, sb *superblock) error {
+	off, err := backupOffset(f)
+	if err != nil {
+		return err
+	}
+	if superblockSize+sb.used > off {
+		return errBackupNoSpace
+	}
+	buf, err := sealSuperblock(sb)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteAt(buf, off); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// readSuperblock は A面を読み、読めない場合に限り B面 (末尾のバックアップ)
+// を試す。B面から読めた場合は復旧として扱い、その旨を表示する。
+// A面が正常なら B面は (古くても) 一切使わない。
 func readSuperblock(f *os.File, recipient string) (*superblock, error) {
-	buf := make([]byte, superblockSize)
-	if _, err := f.ReadAt(buf, 0); err != nil {
+	sb, err := readSuperblockAt(f, recipient, 0)
+	if err == nil {
+		return sb, nil
+	}
+	if sbB, berr := readBackupSuperblock(f, recipient); berr == nil {
+		fmt.Fprintln(os.Stderr, "警告: 主スーパーブロックが読めないため、コンテナ末尾のバックアップから復旧しました (バックアップ時点の状態で開きます。直前の追記が反映されていない可能性があります)")
+		return sbB, nil
+	}
+	return nil, err
+}
+
+// readBackupSuperblock は B面だけを読む (復旧表示はしない)。
+func readBackupSuperblock(f *os.File, recipient string) (*superblock, error) {
+	off, err := backupOffset(f)
+	if err != nil {
+		return nil, err
+	}
+	return readSuperblockAt(f, recipient, off)
+}
+
+func readSuperblockAt(f *os.File, recipient string, off int64) (*superblock, error) {
+	buf := make([]byte, noteOffset)
+	if _, err := f.ReadAt(buf, off); err != nil {
 		return nil, ErrMismatch
 	}
 	salt := append([]byte(nil), buf[:saltSize]...)
