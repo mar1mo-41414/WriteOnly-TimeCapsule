@@ -122,6 +122,24 @@ func TestSignatureTriesAllMirrors(t *testing.T) {
 	}
 }
 
+// armor ヘッダを行頭以外に含むだけのファイルはタイムロック鍵と判定しないこと (L4)。
+func TestIsTimelockFileStrict(t *testing.T) {
+	id, _ := age.GenerateX25519Identity()
+	b, err := TimelockIdentity(id, time.Now().AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsTimelockFile(b) {
+		t.Error("正規のタイムロック鍵を判定できない")
+	}
+	if IsTimelockFile([]byte("メモ -----BEGIN AGE ENCRYPTED FILE----- を含む文章")) {
+		t.Error("本文中にヘッダ文字列を含むだけのファイルを誤判定した")
+	}
+	if IsTimelockFile([]byte("AGE-SECRET-KEY-1QQQQ")) {
+		t.Error("秘密鍵を誤判定した")
+	}
+}
+
 // ReadTimelockInfo は鍵ファイルと同じサイズ上限で読むこと (M3)。
 func TestReadTimelockInfoSizeLimit(t *testing.T) {
 	d := t.TempDir()

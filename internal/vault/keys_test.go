@@ -101,6 +101,46 @@ func TestShareErrors(t *testing.T) {
 	}
 }
 
+// 本体座標の検証 (M4)。OpenBao shamir の座標はランダム割当でヘッダ Index と
+// 一致しないのが正常なので、一致は要求しない。代わりに:
+//   - 座標 0 の欠片は ParseShare で拒否する
+//   - 番号だけ付け替えた同一欠片は二重に数えない (座標で重複排除し、
+//     shamir.Combine への座標重複によるゼロ除算パニックを防ぐ)
+//   - 同じ座標で中身が違う欠片は拒否する
+func TestShareCoordinateValidation(t *testing.T) {
+	a, _ := age.GenerateX25519Identity()
+	shares, _ := SplitIdentity(a, 2, 3)
+
+	// 座標 0 は不正
+	zero := *shares[0]
+	zero.Data = append([]byte(nil), shares[0].Data...)
+	zero.Data[len(zero.Data)-1] = 0
+	if _, err := ParseShare(zero.String()); err == nil || !strings.Contains(err.Error(), "座標") {
+		t.Errorf("座標 0 の欠片を受け付けた: %v", err)
+	}
+
+	// 番号だけ付け替えた同一欠片 + 本物1個では、実質1個なので復元できない
+	forged := *shares[0]
+	forged.Index = shares[1].Index
+	if _, err := CombineShares([]*Share{&forged, shares[0]}); err == nil || !strings.Contains(err.Error(), "足りません") {
+		t.Errorf("付け替え欠片を二重に数えてしまった: %v", err)
+	}
+
+	// 同じ座標で中身が違う欠片は拒否する
+	tampered := *shares[1]
+	tampered.Data = append([]byte(nil), shares[1].Data...)
+	tampered.Data[0] ^= 1
+	tampered.Data[len(tampered.Data)-1] = shares[0].Data[len(shares[0].Data)-1]
+	if _, err := CombineShares([]*Share{shares[0], &tampered}); err == nil || !strings.Contains(err.Error(), "座標が重複") {
+		t.Errorf("座標が衝突する欠片を受け付けた: %v", err)
+	}
+
+	// 正常な欠片は従来どおり復元できる (座標 != Index でもよい)
+	if _, err := CombineShares([]*Share{shares[0], shares[1]}); err != nil {
+		t.Errorf("正常な欠片が復元できない: %v", err)
+	}
+}
+
 func TestInitSplitAndOpen(t *testing.T) {
 	d := t.TempDir()
 	o := InitOptions{

@@ -31,10 +31,12 @@ import (
 const (
 	shareHRP     = "wotc-share-"
 	shareVersion = 1
-	fpSize       = 4
-	setIDSize    = 4
-	shareHead    = 4 + fpSize + setIDSize
-	secretHRP    = "age-secret-key-"
+	// 指紋・分割ID は各 32bit で衝突耐性は限定的だが、拡張は欠片の保存形式
+	// (shareVersion) の変更になるため今回は行わない (要形式変更として残件)。
+	fpSize    = 4
+	setIDSize = 4
+	shareHead = 4 + fpSize + setIDSize
+	secretHRP = "age-secret-key-"
 )
 
 // Share は鍵の欠片1個。
@@ -77,6 +79,13 @@ func ParseShare(str string) (*Share, error) {
 	copy(s.SetID[:], b[4+fpSize:shareHead])
 	if s.Threshold < 2 || s.Threshold > s.Total || s.Index < 1 || s.Index > s.Total {
 		return nil, errors.New("鍵の欠片の形式が不正です")
+	}
+	// shamir 本体の末尾バイトは座標 (x)。OpenBao の shamir は座標をランダムに
+	// 割り当てるため、ヘッダの Index (通し番号) とは一致しないのが正常で、
+	// 一致を要求すると既存の欠片が読めなくなる。ここでは座標として不正な
+	// 0 だけを拒否し、座標の重複・衝突の検証は CombineShares で行う。
+	if len(s.Data) == 0 || s.Data[len(s.Data)-1] == 0 {
+		return nil, errors.New("鍵の欠片の形式が不正です (本体の座標が不正です)")
 	}
 	return s, nil
 }
@@ -137,8 +146,24 @@ func CombineShares(shares []*Share) (*age.X25519Identity, error) {
 	}
 	first := shares[0]
 	seen := map[int]bool{}
+	seenCoord := map[byte][]byte{}
 	var parts [][]byte
 	for _, s := range shares {
+		// 復元はヘッダ Index ではなく本体末尾の座標 (x) で行われる。座標の
+		// 重複した part を shamir.Combine に渡すと補間でゼロ除算パニックに
+		// なるため、ここで座標の一意性を担保する。番号だけ付け替えた同一
+		// 欠片は重複として読み飛ばし、同じ座標で中身が違うものは拒否する。
+		if len(s.Data) == 0 || s.Data[len(s.Data)-1] == 0 {
+			return nil, errors.New("鍵の欠片の形式が不正です (本体の座標が不正です)")
+		}
+		coord := s.Data[len(s.Data)-1]
+		if prev, ok := seenCoord[coord]; ok {
+			if bytes.Equal(prev, s.Data) {
+				continue // 同じ欠片が番号を付け替えて渡されただけ
+			}
+			return nil, errors.New("鍵の欠片の本体の座標が重複しています (細工された欠片が混ざっている可能性があります)")
+		}
+		seenCoord[coord] = s.Data
 		if s.Fingerprint != first.Fingerprint {
 			return nil, errors.New("別のカプセルの鍵の欠片が混ざっています")
 		}
@@ -310,6 +335,9 @@ func LoadKeys(paths []string) (*age.X25519Identity, error) {
 			default:
 				return nil, fmt.Errorf("%s:%d: 秘密鍵でも鍵の欠片でもない行があります (コンテナや別のファイルを --key に指定していませんか?)", p, n)
 			}
+		}
+		if err := sc.Err(); err != nil {
+			return nil, fmt.Errorf("%s: 鍵ファイルが読み切れません: %w", p, err)
 		}
 	}
 

@@ -205,16 +205,22 @@ func WriteTimelock(path string, id *age.X25519Identity, unlock time.Time) error 
 }
 
 // IsTimelockFile はファイル内容がタイムロック鍵かどうかを返す。
+// armor ヘッダが「行頭にある」ことまで確認する (本文中にその文字列を
+// 含むだけの別種のファイルを誤ってタイムロック鍵と判定しないため)。
 func IsTimelockFile(b []byte) bool {
-	return bytes.Contains(b, []byte(armor.Header))
+	_, err := armoredPart(b)
+	return err == nil
 }
 
 func armoredPart(b []byte) ([]byte, error) {
-	i := bytes.Index(b, []byte(armor.Header))
+	if bytes.HasPrefix(b, []byte(armor.Header)) {
+		return b, nil
+	}
+	i := bytes.Index(b, []byte("\n"+armor.Header))
 	if i < 0 {
 		return nil, errors.New("タイムロック鍵の形式が不正です")
 	}
-	return b[i:], nil
+	return b[i+1:], nil
 }
 
 // TimelockRound はタイムロック鍵ファイルの age ヘッダから、ロック先のラウンドを読む。
