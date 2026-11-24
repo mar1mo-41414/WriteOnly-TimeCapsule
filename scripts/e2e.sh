@@ -265,7 +265,7 @@ check      ".note のような別ファイルは作らない" sh -c 'test "$(ls 
 for i in 1 2 3; do head -c 100000 /dev/urandom > f$i; v add f$i; done
 expect_ok  "3回 add した後の status" v status
 check      "add してもコメントは残る" grep -q "コメント: 2027年春の卒業記念。写真と寄せ書き" "$LOG"
-check      "コメントはコンテナに平文で入っている" grep -q -a "2027年春の卒業記念" vault.dat
+check      "コメントはコンテナに平文で入っている" env LC_ALL=C grep -q -a "2027年春の卒業記念" vault.dat
 mkdir moved && cp vault.dat moved/
 expect_ok  "コンテナだけ別の場所へ移して status (公開鍵なし)" v status -V moved/vault.dat
 check      "移した先でもコメントが読める" grep -q "コメント: 2027年春の卒業記念" "$LOG"
@@ -293,14 +293,14 @@ check      "status に表示" grep -q "コメント: 最初のとても長いコ
 expect_fail "既にあるのに add" "既にコメントがあります" v comment add "二重"
 expect_ok  "comment edit (短く書き換え)" v comment edit "短い"
 check      "変更前と変更後を表示" sh -c "grep -q '変更前:   最初の' '$LOG' && grep -q 'コメント: 短い' '$LOG'"
-check      "書き換え前のコメントの残りがコンテナに無い" sh -c '! grep -q -a 寄せ書き vault.dat'
+check      "書き換え前のコメントの残りがコンテナに無い" sh -c '! LC_ALL=C grep -q -a 寄せ書き vault.dat'
 expect_fail "空のコメントに edit" "空のコメントにはできません" v comment edit " "
 echo y > y.txt; v add y.txt
 expect_ok  "add した後の vault comment" v comment
 check      "コメントは残っている" grep -q "^短い$" "$LOG"
 expect_ok  "comment erase" v comment erase
 check      "消したコメントを控えとして表示" grep -q "短い" "$LOG"
-check      "消去後はコンテナに目印もコメントも無い" sh -c '! grep -q -a -e WOTCNOTE -e 短い vault.dat'
+check      "消去後はコンテナに目印もコメントも無い" sh -c '! LC_ALL=C grep -q -a -e WOTCNOTE -e 短い vault.dat'
 expect_ok  "消去後の vault comment" v comment
 check      "「コメントはありません」" grep -q "コメントはありません" "$LOG"
 expect_ok  "コメントが無いのに erase (何もしない)" v comment erase
