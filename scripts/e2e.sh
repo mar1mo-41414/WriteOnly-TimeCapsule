@@ -220,9 +220,16 @@ check      "壊れていたら破棄しない" test -e c.dat -a -e c.key
 corrupt c2.dat $((512 + 3))
 expect_fail "位置情報 (長さ) が壊れたカプセル" "位置情報が壊れていて" v open -V c2.dat --key c.key --out o-corrupt2
 corrupt c3.dat 50
-expect_fail "先頭 (管理情報) が壊れたカプセルを開封" "コンテナが壊れているか" v open -V c3.dat --key c.key --out o-corrupt3
+# 先頭 (管理情報 = A面) が壊れても、末尾のバックアップ (B面) から復旧して開封できる (H2)
+expect_ok  "先頭 (管理情報) が壊れたカプセルを B面から復旧して開封" v open -V c3.dat --key c.key --out o-corrupt3
+check      "復旧時はその旨が表示される" grep -q "バックアップから復旧" "$LOG"
+check      "復旧で3件とも取り出せる" sh -c 'cmp -s src/two.txt o-corrupt3/two.txt && cmp -s src/three.txt o-corrupt3/three.txt && test -e o-corrupt3/big1'
 cp c.dat.pub c3.dat.pub
-expect_fail "先頭が壊れたカプセルには追記もできない" "コンテナが壊れているか" v add -V c3.dat src/two.txt
+expect_ok  "先頭が壊れたカプセルにも復旧して追記できる" v add -V c3.dat src/two.txt
+# A面・B面の両方が壊れたら開封できない
+cp c.dat c4.dat; cp c.dat.pub c4.dat.pub
+corrupt c4.dat 50; python3 -c 'import os,sys;f=open("c4.dat","r+b");o=os.path.getsize("c4.dat")-50;f.seek(o);b=f.read(1);f.seek(o);f.write(bytes([b[0]^1]))'
+expect_fail "先頭と末尾 (A面・B面) が壊れたカプセルを開封" "コンテナが壊れているか" v open -V c4.dat --key c.key --out o-corrupt4
 
 # タイムロック鍵の破損・別カプセルのもの
 v init -V t.dat --size 256K --timelock +2s --key-out t.key
