@@ -32,8 +32,8 @@ func main() {
 		Use:   "vault",
 		Short: "書き込み専用タイムカプセル: 追記はできるが、秘密鍵で開封するまで中身は一切見えない",
 		Long: "書き込み専用タイムカプセル: 追記はできるが、秘密鍵で開封するまで中身は一切見えない。\n\n" +
-			"※ 日常をちょっと彩るための遊び道具です。実務・業務や、失うと困るデータには使わないでください。\n" +
-			"   This is a toy for everyday fun. Do NOT use it for real work.",
+			"※ あくまで趣味の範囲の作品で、絶対安全ではありません。絶対に実務・業務では使わないでください。失うと困るデータにも使わないでください。\n" +
+			"   This is a hobby toy and is NOT absolutely safe. Never use it for real work.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
