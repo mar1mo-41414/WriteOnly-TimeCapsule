@@ -3,7 +3,7 @@
 [日本語 README →](README.md)
 
 > [!CAUTION]
-> **This is a toy for adding a little fun to everyday life. Do NOT use it for real work.**
+> **This is a toy for adding a little fun to everyday life. It is a hobby project and is NOT absolutely safe. Never use it for real work or business.**
 >
 > It is not meant for protecting secrets that truly matter, business data, or anything you cannot afford to lose.
 > The cryptography itself is delegated to well-established libraries ([age](https://age-encryption.org/), [drand](https://drand.love/)),
@@ -42,7 +42,7 @@ chmod +x vault-darwin-arm64 && mv vault-darwin-arm64 /usr/local/bin/vault
 > On macOS, a binary downloaded with a browser may be blocked by Gatekeeper.
 > Run `xattr -d com.apple.quarantine /usr/local/bin/vault` in that case.
 
-To build from source you need Go: `make` (host) / `make dist` (all platforms).
+To build from source you need Go 1.27 or later (as specified in `go.mod`): `make` (host) / `make dist` (all platforms).
 
 ## Usage
 
@@ -65,7 +65,10 @@ vault status    # → shows the comment
 ```
 
 The comment is embedded in the container (`vault.dat`) itself, so it travels with the container and can be read with `vault status` without any key.
-It is **not encrypted** — anyone can read it, so don't put secrets in it. Up to 425 bytes (newlines allowed).
+
+- **Not encrypted** — anyone can read it, so don't put secrets in it
+- **Not authenticated** — anyone who can rewrite the container file can also forge the comment. Never base an important decision on what a comment says
+- Up to 425 bytes (about 140 Japanese characters); newlines allowed
 
 You can also add, change or remove it later (the public key `vault.dat.pub` must be next to the capsule):
 
@@ -94,6 +97,7 @@ A single share reveals nothing about the key. Each share is one ~90-character li
 # cannot be opened before 2036-03-20; a 2-of-3 split key is kept as the escape hatch
 vault init --size 500M --timelock 2036-03-20 --shares 3 --threshold 2 --key-out escape/capsule.key
 vault status                 # → openable after 2036-03-20 00:00:00 (3460 days left)
+vault open                   # → cannot be opened yet
 vault open --and-destroy-key # after the date, no key needed (Internet access required)
 vault timelock --key vault-secret.key --until +10y   # add a time lock to an existing capsule
 ```
@@ -122,7 +126,8 @@ The CLI messages are in Japanese.
 - The time lock relies on the external [drand](https://drand.love/) network. If drand no longer exists on that date, only the escape hatch can open the capsule — always keep one
 - Destroying only affects files on the machine where you open it, not copies or backups
 - If part of the capsule is corrupted, the intact files can still be recovered (a corrupted capsule is never destroyed)
-- If any file to be destroyed cannot be removed (read-only, no permission on its folder, ...), nothing is destroyed
+- If it is known **in advance** that a file to be destroyed cannot be removed (read-only, no permission on its folder, ...), nothing is destroyed and the operation stops. If a failure occurs while destruction is already running, however, some files may end up deleted and others not (in that case the tool reports what was destroyed and what remains)
+- **The integrity of the contents (that they were not tampered with) is NOT guaranteed.** Only confidentiality (without the secret key, the contents cannot be read) is protected. Anyone holding both the public key and the container can truncate, replace, duplicate or reorder records in a way the opener cannot detect. See "Limitations" in [docs/ARCHITECTURE-EN.md](docs/ARCHITECTURE-EN.md)
 - There is intentionally no command to look inside (`list`, `peek`, ...)
 
 Technical details are in [docs/ARCHITECTURE-EN.md](docs/ARCHITECTURE-EN.md).
