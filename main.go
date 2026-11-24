@@ -561,10 +561,13 @@ func openCmd() *cobra.Command {
 			if err := checkDestroyable(targets); err != nil { // 確認待ちの間に変わっていないか
 				return err
 			}
-			for _, p := range targets {
-				if err := vault.Shred(p); err != nil {
-					return fmt.Errorf("%s の破棄に失敗: %w", p, err)
-				}
+			// 破棄は原子的ではない: 実行中に失敗すると一部だけ消えた状態になりうる。
+			// その場合は何が消えて何が残ったかを必ず明示する。
+			destroyed, err := vault.ShredAll(targets)
+			if err != nil {
+				remaining := targets[len(destroyed):]
+				return fmt.Errorf("破棄に失敗しました: %w\n既に破棄したもの: %s\nまだ残っているもの: %s (残っているものは手動で消去してください)",
+					err, joinList(destroyed), joinList(remaining))
 			}
 			os.Remove(pubkeyPath())
 			fmt.Println("破棄しました。カプセルは壊れました。")
@@ -576,6 +579,14 @@ func openCmd() *cobra.Command {
 	c.Flags().StringVar(&outDir, "out", "", "展開先ディレクトリ (既定: ./vault-opened-<日時>/)")
 	c.Flags().BoolVar(&destroy, "and-destroy-key", false, "展開後にコンテナと秘密鍵を上書き消去する (確認あり)")
 	return c
+}
+
+// joinList はパスの一覧を ", " 区切りで返す (空なら「なし」)。
+func joinList(paths []string) string {
+	if len(paths) == 0 {
+		return "なし"
+	}
+	return strings.Join(paths, ", ")
 }
 
 // destroyTargets は --and-destroy-key で消去するファイル (コンテナ・使った鍵・タイムロック鍵) を返す。

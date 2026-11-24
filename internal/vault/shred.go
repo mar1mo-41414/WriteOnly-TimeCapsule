@@ -72,8 +72,36 @@ func Shred(path string) error {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
+		if err := syncDir(filepath.Dir(path)); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// ShredAll は paths を順に Shred する。途中で失敗した場合は、既に破棄できた
+// 対象の一覧とエラーを返す (破棄は原子的ではない: 呼び出し側は「何が消えて
+// 何が残ったか」を利用者に明示すること)。
+func ShredAll(paths []string) (destroyed []string, err error) {
+	for _, p := range paths {
+		if err := Shred(p); err != nil {
+			return destroyed, fmt.Errorf("%s: %w", p, err)
+		}
+		destroyed = append(destroyed, p)
+	}
+	return destroyed, nil
+}
+
+// syncDir はディレクトリのメタデータ (ファイルの作成・削除・リネーム) を
+// 永続化する。削除後にこれをしないと、クラッシュ時に消したはずのファイルが
+// 復活する可能性を排除できない。
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func shredFile(path string) error {
@@ -96,16 +124,24 @@ func shredFile(path string) error {
 		f.Close()
 		return err
 	}
-	f.Sync()
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("%s の上書きを保存できませんでした: %w", path, err)
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
 
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return err
+	}
 	tmp := filepath.Join(filepath.Dir(path), "."+hex.EncodeToString(b))
 	if err := os.Rename(path, tmp); err == nil {
 		path = tmp
 	}
-	return os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
 }

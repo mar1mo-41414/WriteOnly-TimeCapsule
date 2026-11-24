@@ -484,6 +484,41 @@ func TestSetComment(t *testing.T) {
 	}
 }
 
+// 破棄ループの途中失敗: 既に消えたもの・残ったものが ShredAll の戻り値で分かること (H3)。
+func TestShredAllPartialFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root では権限のテストができない")
+	}
+	d := t.TempDir()
+	first := writeFile(t, d, "first.key", randBytes(1000))
+	ro := writeFile(t, d, "ro.key", randBytes(1000))
+	last := writeFile(t, d, "last.key", randBytes(1000))
+	os.Chmod(ro, 0o400)
+	defer os.Chmod(ro, 0o600)
+
+	destroyed, err := ShredAll([]string{first, ro, last})
+	if err == nil {
+		t.Fatal("途中失敗するはず")
+	}
+	if len(destroyed) != 1 || destroyed[0] != first {
+		t.Fatalf("destroyed = %v", destroyed)
+	}
+	if _, err := os.Lstat(first); !os.IsNotExist(err) {
+		t.Error("1つ目は消えているはず")
+	}
+	for _, p := range []string{ro, last} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("%s は残っているはず: %v", p, err)
+		}
+	}
+	// 全部消せる場合は全部が destroyed に入る
+	os.Chmod(ro, 0o600)
+	destroyed, err = ShredAll([]string{ro, last})
+	if err != nil || len(destroyed) != 2 {
+		t.Fatalf("destroyed=%v err=%v", destroyed, err)
+	}
+}
+
 func TestShredSymlink(t *testing.T) {
 	d := t.TempDir()
 	target := writeFile(t, d, "real.dat", randBytes(5000))
